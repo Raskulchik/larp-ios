@@ -26,13 +26,6 @@ struct SearchView: View {
                 .padding(.horizontal)
                 .padding(.top, 8)
 
-                if source == .yandex && settings.yandexToken.isEmpty {
-                    Text("Для Yandex нужен токен в Настройках")
-                        .font(.footnote)
-                        .foregroundColor(.orange)
-                        .padding(.top, 6)
-                }
-
                 HStack {
                     TextField("Трек, исполнитель…", text: $query)
                         .textFieldStyle(.roundedBorder)
@@ -104,22 +97,52 @@ struct SearchView: View {
     private func runSearch() {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return }
+        guard let base = settings.daemonBaseURL else {
+            errorText = "Сервер не настроен (указать IP в Настройках)"
+            return
+        }
         errorText = nil
         isSearching = true
         let src = source
-        let token = src == .yandex ? settings.yandexToken : ""
 
-        BridgeQueue.shared.run {
-            try RustBridge.shared.search(src, query: q, yandexToken: token)
-        } then: { result in
+        guard var comps = URLComponents(url: base.appendingPathComponent("api/search"),
+                                        resolvingAgainstBaseURL: false) else {
             isSearching = false
-            switch result {
-            case .success(let tracks):
-                results = tracks
-                if tracks.isEmpty { errorText = "Ничего не найдено" }
-            case .failure(let e):
-                errorText = e.localizedDescription
+            return
+        }
+        comps.queryItems = [
+            URLQueryItem(name: "source", value: src.rawValue),
+            URLQueryItem(name: "query", value: q)
+        ]
+        guard let url = comps.url else {
+            isSearching = false
+            return
+        }
+
+        Task {
+            do {
+                let (data, resp) = try await URLSession.shared.data(from: url)
+                if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                    let msg = Self.searchError(from: data) ?? "демон ответил \(http.statusCode)"
+                    throw NSError(domain: "search", code: http.statusCode,
+                                  userInfo: [NSLocalizedDescriptionKey: msg])
+                }
+                struct SearchResponse: Decodable { let results: [Track] }
+                let searchResults = try JSONDecoder().decode(SearchResponse.self, from: data).results
+                isSearching = false
+                results = searchResults
+                if results.isEmpty { errorText = "Ничего не найдено" }
+            } catch {
+                isSearching = false
+                errorText = error.localizedDescription
             }
         }
+    }
+
+    private static func searchError(from data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return obj["error"] as? String
     }
 }

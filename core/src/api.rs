@@ -438,6 +438,8 @@ pub async fn search_ytmusic(query: &str) -> anyhow::Result<Vec<Track>> {
     Ok(tracks)
 }
 
+const YTM_TRACK_TYPES: [&str; 2] = ["Song", "Video"];
+
 fn collect_ytm_tracks(value: &serde_json::Value, out: &mut Vec<Track>) {
     match value {
         serde_json::Value::Object(map) => {
@@ -460,6 +462,58 @@ fn collect_ytm_tracks(value: &serde_json::Value, out: &mut Vec<Track>) {
     }
 }
 
+fn ytm_flex_runs(item: &serde_json::Value, col: usize) -> Vec<String> {
+    item.get("flexColumns")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.get(col))
+        .and_then(|c| c.pointer("/musicResponsiveListItemFlexColumnRenderer/text/runs"))
+        .and_then(|r| r.as_array())
+        .map(|runs| {
+            runs.iter()
+                .filter_map(|r| r.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// "7:48" → 468_000, "1:02:03" → 3_723_000, иначе None.
+fn parse_duration_str(s: &str) -> Option<u64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    let secs: u64 = match parts.len() {
+        2 => parts[1].parse::<u64>().ok()? + parts[0].parse::<u64>().ok()? * 60,
+        3 => parts[2].parse::<u64>().ok()?
+            + parts[1].parse::<u64>().ok()? * 60
+            + parts[0].parse::<u64>().ok()? * 3600,
+        _ => return None,
+    };
+    if secs == 0 {
+        return None;
+    }
+    Some(secs * 1000)
+}
+
+/// Акт убьет длительность из accessibility-label: "Song • 7 minutes, 48 seconds".
+fn ytm_label_duration(label: &str) -> Option<u64> {
+    let re_min = regex::Regex::new(r"(\d+)\s*minutes?,?\s*(?:and\s*)?(\d+)\s*seconds").ok()?;
+    if let Some(caps) = re_min.captures(label) {
+        let m: u64 = caps[1].parse().ok()?;
+        let s: u64 = caps[2].parse().ok()?;
+        return Some((m * 60 + s) * 1000);
+    }
+    let re_sec = regex::Regex::new(r"(\d+)\s*seconds").ok()?;
+    if let Some(caps) = re_sec.captures(label) {
+        let s: u64 = caps[1].parse().ok()?;
+        return Some(s * 1000);
+    }
+    None
+}
+
+fn ytm_play_label(item: &serde_json::Value) -> Option<String> {
+    item.pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/accessibilityPlayData/accessibilityData/label")
+        .and_then(|l| l.as_str())
+        .map(|s| s.to_string())
+}
+
 fn ytm_item_to_track(item: &serde_json::Value) -> Option<Track> {
     let video_id = item.get("playlistItemData")
         .and_then(|p| p.get("videoId"))
@@ -470,54 +524,56 @@ fn ytm_item_to_track(item: &serde_json::Value) -> Option<Track> {
             .and_then(|v| v.as_str()))
         .map(|s| s.to_string())?;
 
-    let columns = item.get("flexColumns")?.as_array()?;
-    let title = columns.get(0)?
-        .pointer("/musicResponsiveListItemFlexColumnRenderer/text/runs")
-        .and_then(|r| r.as_array())?
-        .first()?
-        .get("text")?
-        .as_str()?
-        .to_string();
+    let col0 = ytm_flex_runs(item, 0);
+    let col1 = ytm_flex_runs(item, 1);
 
-    let subtitle_runs: Vec<String> = columns.get(1)
-        .and_then(|col| col.pointer("/musicResponsiveListItemFlexColumnRenderer/text/runs"))
-        .and_then(|r| r.as_array())
-        .map(|runs| runs.iter()
-            .filter_map(|r| r.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
-            .collect())
-        .unwrap_or_default();
+    let item_type = col1.first().map(|s| s.trim()).unwrap_or("");
+    if !YTM_TRACK_TYPES.contains(&item_type) {
+        return None;
+    }
 
-    let is_typed = subtitle_runs.first().map_or(false, |s| {
-        matches!(s.as_str(), "Song" | "Video" | "Artist" | "Album" | "Single" | "Episode")
-    });
-    let artist_runs: Box<dyn Iterator<Item = &String>> = if is_typed {
-        Box::new(subtitle_runs.iter().skip(1))
-    } else {
-        Box::new(subtitle_runs.iter())
-    };
+    let title = col0.first()?.clone();
 
-    let artist = artist_runs
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty() && *s != "•" && *s != "," && *s != "&"
-            && !s.contains("views") && !s.contains("subscribers") && !s.contains("years ago")
-            && !s.chars().all(|c| c.is_ascii_digit() || c == ':' || c == ' '))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let artist = if artist.is_empty() { "Unknown".to_string() } else { artist };
-
-    let duration_ms = subtitle_runs.iter()
-        .rev()
-        .find_map(|s| {
-            let s = s.trim();
-            let parts: Vec<&str> = s.split(':').collect();
-            if parts.len() == 2 {
-                let min: u64 = parts[0].parse().ok()?;
-                let sec: u64 = parts[1].parse().ok()?;
-                Some((min * 60 + sec) * 1000)
-            } else {
-                None
+    // Артист: второй текстовый run в col1 (если это имя, а не длительность).
+    let mut artist = String::new();
+    for s in col1.iter().skip(1) {
+        let s = s.trim();
+        if s.is_empty() || s == "•" || s == "·" {
+            continue;
+        }
+        if parse_duration_str(s).is_some() {
+            continue;
+        }
+        if s.contains("views") || s.contains("plays") || s.contains("subscribers") || s.contains("audience") {
+            continue;
+        }
+        artist = s.to_string();
+        break;
+    }
+    // В новых ответах артист песен часто живет только в label: "Play <title> - <artist>".
+    if artist.is_empty() {
+        if let Some(label) = ytm_play_label(item) {
+            let s = label.strip_prefix("Play ").unwrap_or(&label).trim();
+            if let Some(rest) = s.strip_prefix(title.trim()) {
+                artist = rest
+                    .strip_prefix(" - ")
+                    .unwrap_or(rest)
+                    .trim()
+                    .to_string();
             }
-        });
+        }
+    }
+    if artist.is_empty() {
+        artist = "Unknown".into();
+    }
+
+    // Длительность: из col1 ("7:48") либо из label ("7 minutes, 48 seconds").
+    let mut duration_ms = col1.iter().find_map(|s| parse_duration_str(s.trim()));
+    if duration_ms.is_none() {
+        if let Some(label) = ytm_play_label(item) {
+            duration_ms = ytm_label_duration(&label);
+        }
+    }
 
     let artwork_url = item.get("thumbnail")
         .and_then(|t| t.get("musicThumbnailRenderer"))

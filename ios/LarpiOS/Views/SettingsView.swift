@@ -21,8 +21,8 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(footer: Text("Нужен только для Yandex Music. Хранится локально на телефоне.")) {
-                    SecureField("Yandex OAuth-токен", text: $settings.yandexToken)
+                Section(footer: Text("Yandex-токен живёт на компьютере в ~/.config/larp-daemon/config.json — телефону он не нужен, VPN тоже.")) {
+                    Text("VPN на телефоне не требуется: поиск и скачивание идут через демон по Wi-Fi.")
                 }
 
                 Section(footer: Text("Скачивание идёт через демон на компьютере: он сам качает (yt-dlp / прямые ссылки Yandex) и раздаёт mp3 по Wi-Fi.")) {

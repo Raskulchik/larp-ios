@@ -4,7 +4,7 @@ mod jobs;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/download", post(create_job))
+        .route("/api/search", get(search))
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/:id", get(get_job))
         .route("/files/:name", get(serve_file))
@@ -150,6 +151,40 @@ async fn list_jobs(State(state): State<Arc<AppState>>) -> Json<serde_json::Value
         .map(|j| serde_json::to_value(j).unwrap_or(serde_json::Value::Null))
         .collect();
     Json(serde_json::json!({"ok": true, "jobs": arr}))
+}
+
+#[derive(Deserialize)]
+struct SearchReq {
+    source: String,
+    query: String,
+}
+
+/// Поиск через компьютер (не с телефона): телефону VPN не нужен,
+/// токены и client_id живут на стороне демона.
+async fn search(State(state): State<Arc<AppState>>, Query(q): Query<SearchReq>) -> Response {
+    let result = match larp_core::api::Source::from_str(&q.source) {
+        Some(larp_core::api::Source::YandexMusic) => {
+            larp_core::api::search_yandex(&q.query, &state.conf.yandex_token).await
+        }
+        Some(larp_core::api::Source::SoundCloud) => larp_core::api::search_soundcloud(&q.query).await,
+        Some(larp_core::api::Source::YouTubeMusic) => larp_core::api::search_ytmusic(&q.query).await,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"ok": false, "error": format!("unknown source {}", q.source)})),
+            )
+                .into_response();
+        }
+    };
+
+    match result {
+        Ok(tracks) => Json(serde_json::json!({"ok": true, "results": tracks})).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn get_job(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
