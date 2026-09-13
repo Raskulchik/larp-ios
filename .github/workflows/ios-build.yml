@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +26,13 @@ jobs:
         run: ./ios/build-rust.sh
 
       - name: Generate Xcode project
-        run: xcodegen generate --spec ios/project.yml
+        run: |
+          xcodegen generate --spec ios/project.yml
+          # Страховка: если xcodegen выдал формат Xcode 16 (objectVersion 77),
+          # понижаем до 56, чтобы читался любым Xcode 15+.
+          if grep -q "objectVersion = 77" ios/LarpiOS.xcodeproj/project.pbxproj; then
+            sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' ios/LarpiOS.xcodeproj/project.pbxproj
+          fi
 
       - name: Build app (device, без подписи)
         run: |
