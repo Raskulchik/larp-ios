@@ -1,5 +1,7 @@
 /target
 ios/libs
+build/
+payload/
 .DS_Store
 *.pbxuser
 xcuserdata/
