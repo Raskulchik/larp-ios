@@ -243,7 +243,7 @@ pub extern "C" fn larp_free(ptr: *mut c_char) {
 
 #[no_mangle]
 pub extern "C" fn larp_version() -> *const c_char {
-    b"larp-core-0.1.0\0".as_ptr() as *const c_char
+    concat!("larp-core-", env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
 }
 
 #[cfg(test)]
