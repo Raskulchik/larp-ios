@@ -16,6 +16,9 @@ final class PlayerEngine: ObservableObject {
     @Published var currentTime: TimeInterval = 0
     @Published var duration: TimeInterval = 0
     @Published var repeatMode: RepeatMode = .off
+    @Published var isShuffled = false
+
+    var isShuffleOn: Bool { isShuffled }
     @Published var artwork: UIImage?
 
     var currentTrack: Track? {
@@ -140,6 +143,19 @@ final class PlayerEngine: ObservableObject {
             player.pause()
             isPlaying = false
         }
+    }
+
+    func shuffle() {
+        guard queue.count > 1 else { return }
+        let anchor = currentTrack?.searchKey
+        var rest = queue.filter { $0.searchKey != anchor }
+        rest.shuffle()
+        var newQueue = [Track]()
+        if let anchor { newQueue.append(queue.first { $0.searchKey == anchor } ?? queue[0]) }
+        newQueue.append(contentsOf: rest)
+        queue = newQueue
+        currentIndex = 0
+        isShuffled = true
     }
 
     func next() {

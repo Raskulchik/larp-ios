@@ -1,6 +1,7 @@
 mod config;
 mod download;
 mod jobs;
+mod lyrics;
 
 use axum::{
     Json, Router,
@@ -48,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/api/download", post(create_job))
         .route("/api/search", get(search))
+        .route("/api/lyrics", get(lyrics::lyrics))
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/:id", get(get_job))
         .route("/files/:name", get(serve_file))

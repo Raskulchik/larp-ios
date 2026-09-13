@@ -1,4 +1,6 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @ObservedObject private var library = LibraryStore.shared
@@ -36,6 +38,26 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle("Библиотека")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            isImporting = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("Добавить трек")
+                    }
+                }
+                .fileImporter(
+                    isPresented: $isImporting,
+                    allowedContentTypes: [UTType.audio],
+                    allowsMultipleSelection: false
+                ) { result in
+                    guard case .success(let urls) = result, let url = urls.first else { return }
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    library.addLocalFile(from: url, fileName: url.lastPathComponent)
+                }
             .onAppear { library.reloadLiked() }
         }
     }

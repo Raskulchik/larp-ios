@@ -112,4 +112,61 @@ final class LibraryStore: ObservableObject {
             }
         }
     }
+
+    // ============ файлы с телефона ============
+
+    @Published private(set) var localFiles: [Track] = []
+    @Published private(set) var localFileKeys: Set<String> = []
+
+    /// Импорт трека файлом с телефона: копируем в Documents/Downloads/<md5>.mp3
+    /// и добавляем в библиотеку. Всё локально — демон/сеть не нужны.
+    func addLocalFile(from src: URL, fileName: String) {
+        let fm = FileManager.default
+        let downloads = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Downloads", isDirectory: true)
+        try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
+
+        let data = (try? Data(contentsOf: src)) ?? Data()
+        let key = String(data).md5Hex
+        let dest = downloads.appendingPathComponent("\(key).mp3")
+        do {
+            try data.write(to: dest)
+        } catch {
+            return
+        }
+
+        let base = fileName.split(separator: ".").first.map(String.init) ?? fileName
+        let title = base
+        let track = Track(
+            id: key,
+            title: title,
+            artist: "Локальный файл",
+            source: "local",
+            previewUrl: nil,
+            artworkUrl: nil,
+            durationMs: nil
+        )
+        if !localFileKeys.contains(key) {
+            localFiles.append(track)
+            localFileKeys.insert(key)
+            persistLocalFiles()
+        }
+    }
+
+    private func persistLocalFiles() {
+        guard let data = try? JSONEncoder().encode(localFiles) else { return }
+        let url = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalFiles.json")
+        try? data.write(to: url)
+    }
+
+    private func loadLocalFiles() {
+        let url = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalFiles.json")
+        guard let data = try? Data(contentsOf: url) else { return }
+        if let arr = try? JSONDecoder().decode([Track].self, from: data) {
+            localFiles = arr
+            localFileKeys = Set(arr.map(\.searchKey))
+        }
+    }
 }

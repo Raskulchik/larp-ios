@@ -26,6 +26,17 @@ struct PlayerBarView: View {
                 .buttonStyle(.plain)
 
                 Button {
+                    player.shuffle()
+                } label: {
+                    Image(systemName: player.isShuffleOn ? "shuffle.circle.fill" : "shuffle")
+                        .font(.subheadline)
+                        .foregroundStyle(player.isShuffleOn ? Color.accentColor : .primary)
+                        .frame(width: 34, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
                     player.next()
                 } label: {
                     Image(systemName: "forward.fill")
