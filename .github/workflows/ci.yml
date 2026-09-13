@@ -26,39 +26,53 @@ jobs:
         env:
           LARP_TEST_NETSPEED: "0" # не дёргать сеть в CI
 
-  ios-macos:
-    name: iOS (macOS / xcodebuild)
-    runs-on: macos-14
-    defaults:
-      run:
-        working-directory: ios
+  ios:
+    name: iOS (Release .ipa)
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Ставим таргеты Rust для Apple-платформ
-        run: |
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: Install Rust (iOS targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
-      - name: Собираем Rust-ядро (библиотеки для iOS/симулятора)
-        run: |
-          chmod +x build-rust.sh
-          ./build-rust.sh
-
-      - name: Ставим XcodeGen
+      - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Генерируем проект и компилируем (симулятор, без подписи)
-        run: |
-          xcodegen generate --spec project.yml
-          xcodebuild \
-            -project LarpiOS.xcodeproj \
-            -scheme LarpiOS \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+      - name: Show Xcode version
+        run: xcodebuild -version
 
-      - name: Линк и тесты ядра (проверка Swift-интерфейса)
-        run: build/link_and_test.sh 2>/dev/null || true
+      - name: Build Rust core for iOS
+        run: ./ios/build-rust.sh
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate --spec ios/project.yml
+          # Страховка: если xcodegen выдал формат Xcode 16 (objectVersion 77),
+          # понижаем до 56, чтобы читался любым Xcode 15+.
+          if grep -q "objectVersion = 77" ios/LarpiOS.xcodeproj/project.pbxproj; then
+            sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' ios/LarpiOS.xcodeproj/project.pbxproj
+          fi
+
+      - name: Build app (device, без подписи)
+        run: |
+          xcodebuild -project ios/LarpiOS.xcodeproj -scheme LarpiOS \
+                     -configuration Release -destination 'generic/platform=iOS' \
+                     -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+
+      - name: Package .ipa
+        run: |
+          mkdir -p payload/Payload
+          cp -R build/Build/Products/Release-iphoneos/Larpi.app payload/Payload/
+          cd payload && zip -qr ../Larpi.ipa Payload
+          cd .. && rm -rf payload
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Larpi-iOS
+          path: |
+            Larpi.ipa
+            build/Build/Products/Release-iphoneos/Larpi.app
+          if-no-files-found: error

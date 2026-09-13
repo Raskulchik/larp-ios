@@ -64,8 +64,7 @@ struct LibraryView: View {
                     library.addLocalFile(from: url, fileName: url.lastPathComponent)
                 }
             .onAppear { library.reloadLiked() }
-        }
-    }
+}
 }
 
 /// Небольшой адаптер ContentUnavailableView для iOS 15 (он появился в iOS 17).
