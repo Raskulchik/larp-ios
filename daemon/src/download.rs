@@ -5,6 +5,7 @@ use tokio::process::Command;
 pub fn spawn_download(state: std::sync::Arc<AppState>, job: Job) {
     tokio::spawn(async move {
         if let Err(e) = run_download(&state, &job).await {
+            eprintln!("job {} [{}] ERROR: {e:#}", job.id, job.source);
             let mut j = match state.get(&job.id).await {
                 Some(j) => j,
                 None => return,
@@ -13,6 +14,16 @@ pub fn spawn_download(state: std::sync::Arc<AppState>, job: Job) {
             j.message = format!("{e:#}");
             j.updated_at = now();
             state.upsert(j).await;
+            return;
+        }
+        if let Some(j) = state.get(&job.id).await {
+            eprintln!(
+                "job {} [{}] done: {} ({}B)",
+                j.id,
+                j.source,
+                j.file_name.as_deref().unwrap_or("?"),
+                j.size_bytes.unwrap_or(0)
+            );
         }
     });
 }

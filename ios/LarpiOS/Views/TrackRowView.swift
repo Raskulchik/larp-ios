@@ -1,25 +1,33 @@
 import SwiftUI
+import UIKit
 
 struct TrackArtworkView: View {
     let url: String?
+    @State private var image: UIImage?
 
     var body: some View {
         Group {
-            if let url, let u = URL(string: url) {
-                AsyncImage(url: u) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img.resizable().scaledToFill()
-                    default:
-                        placeholder
-                    }
-                }
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
             } else {
                 placeholder
             }
         }
         .frame(width: 46, height: 46)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: url) { await load() }
+    }
+
+    private func load() async {
+        image = nil
+        guard let proxied = AppSettings.shared.thumbURL(for: url) else { return }
+        let req = AppSettings.shared.request(proxied)
+        if let (data, _) = try? await URLSession.shared.data(for: req),
+           let img = UIImage(data: data) {
+            image = img
+        }
     }
 
     private var placeholder: some View {

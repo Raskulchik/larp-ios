@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/:id", get(get_job))
         .route("/files/:name", get(serve_file))
+        .route("/api/thumb", get(thumb))
         .layer(middleware::from_fn(logging))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state);
@@ -109,13 +110,13 @@ async fn logging(req: axum::extract::Request, next: Next) -> Response {
     let uri = req.uri().clone();
     let start = Instant::now();
     let resp = next.run(req).await;
-    println!(
-        "{} {} → {} {}ms",
-        method,
-        uri,
-        resp.status(),
-        start.elapsed().as_millis()
-    );
+    let status = resp.status();
+    let ms = start.elapsed().as_millis();
+    if status.as_u16() >= 400 {
+        eprintln!("{method} {uri} → {status} {ms}ms");
+    } else {
+        println!("{method} {uri} → {status} {ms}ms");
+    }
     resp
 }
 
@@ -225,6 +226,49 @@ async fn get_job(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> 
 }
 
 const CONTENT_TYPE_MP3: &str = "audio/mpeg";
+
+#[derive(Deserialize)]
+struct ThumbReq {
+    #[serde(default)]
+    url: String,
+}
+
+/// Прокси превьюшек (обложек): телефон часто не достаёт ни sndcdn, ни googleusercontent.
+async fn thumb(Query(q): Query<ThumbReq>) -> Response {
+    if !q.url.starts_with("http://") && !q.url.starts_with("https://") {
+        return (StatusCode::BAD_REQUEST, "bad url").into_response();
+    }
+    let resp = match reqwest::get(&q.url).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("thumb: fetch failed: {e}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        return (status, "upstream error").into_response();
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_string();
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("thumb: body read failed: {e}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    (
+        status,
+        [(header::CONTENT_TYPE, content_type)],
+        axum::body::Body::from(bytes.to_vec()),
+    )
+        .into_response()
+}
 
 async fn serve_file(State(state): State<Arc<AppState>>, Path(name): Path<String>, headers: HeaderMap) -> Response {
     if !is_valid_file_name(&name) {

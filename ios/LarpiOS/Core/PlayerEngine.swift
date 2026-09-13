@@ -81,13 +81,7 @@ final class PlayerEngine: ObservableObject {
             return
         }
 
-        // SoundCloud отдаёт HLS-превью — AVPlayer играет m3u8 напрямую.
-        if track.source == "soundcloud", let preview = track.previewUrl, let url = URL(string: preview) {
-            playItem(url, track: track)
-            return
-        }
-
-        // Остальные источники (yandex/ytmusic) — через домашний демон.
+        // Остальные источники (включая SoundCloud — его HLS-превью телефон без VPN не тянет) — через демон.
         DownloadManager.shared.download(track) { [weak self] localURL in
             Task { @MainActor in
                 guard let self, let localURL else { return }
@@ -247,13 +241,14 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func loadArtwork(_ track: Track) {
-        guard let s = track.artworkUrl, let url = URL(string: s) else {
+        artworkTask?.cancel()
+        guard let proxied = AppSettings.shared.thumbURL(for: track.artworkUrl) else {
             artwork = nil
             return
         }
-        artworkTask?.cancel()
         artworkTask = Task {
-            if let data = try? await URLSession.shared.data(from: url).0,
+            let req = AppSettings.shared.request(proxied)
+            if let (data, _) = try? await URLSession.shared.data(for: req),
                let img = UIImage(data: data) {
                 await MainActor.run {
                     self.artwork = img

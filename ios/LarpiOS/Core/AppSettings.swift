@@ -56,4 +56,12 @@ final class AppSettings: ObservableObject {
         }
         return req
     }
+
+    /// URL прокси обложки через демон (телефон сам не достаёт ни sndcdn, ни googleusercontent).
+    func thumbURL(for artworkUrl: String?) -> URL? {
+        guard let artworkUrl, !artworkUrl.isEmpty, let base = daemonBaseURL else { return nil }
+        var comps = URLComponents(url: base.appendingPathComponent("api/thumb"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "url", value: artworkUrl)]
+        return comps.url
+    }
 }
