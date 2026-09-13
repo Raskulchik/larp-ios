@@ -1,5 +1,6 @@
 name: LarpiOS
 options:
+  xcodeVersion: "15.4"
   bundleIdPrefix: local.larpi
   deploymentTarget:
     iOS: "15.0"
