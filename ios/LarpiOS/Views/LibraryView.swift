@@ -13,33 +13,57 @@ struct LibraryView: View {
     }
 
     private var groupView: some View {
-        Group {
-            if library.liked.isEmpty {
+            Group {
+                if library.liked.isEmpty && library.localFiles.isEmpty {
                     ContentUnavailableViewCompat(
                         systemImage: "heart",
                         title: "Пока пусто",
-                        message: "Лайкай треки в поиске — они появятся здесь"
+                        message: "Лайкай треки в поиске или добавь файл плюсом"
                     )
                 } else {
                     List {
-                        ForEach(Array(library.liked.enumerated()), id: \.element.searchKey) { idx, track in
-                            Button {
-                                player.play(library.liked, startAt: idx)
-                            } label: {
-                                TrackRowView(track: track,
-                                             isPlaying: player.currentTrack?.searchKey == track.searchKey)
+                        if !library.localFiles.isEmpty {
+                            Section("Локальные файлы") {
+                                ForEach(Array(library.localFiles.enumerated()), id: \.element.searchKey) { idx, track in
+                                    Button {
+                                        player.play(library.localFiles, startAt: idx)
+                                    } label: {
+                                        TrackRowView(track: track,
+                                                     isPlaying: player.currentTrack?.searchKey == track.searchKey)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .swipeActions {
+                                        Button(role: .destructive) {
+                                            library.removeLocalFile(track)
+                                        } label: {
+                                            Label("Удалить", systemImage: "trash")
+                                        }
+                                    }
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .swipeActions {
-                                Button(role: .destructive) {
-                                    library.toggleLike(track)
-                                } label: {
-                                    Label("Убрать", systemImage: "heart.slash")
+                        }
+                        if !library.liked.isEmpty {
+                            Section("Любимое") {
+                                ForEach(Array(library.liked.enumerated()), id: \.element.searchKey) { idx, track in
+                                    Button {
+                                        player.play(library.liked, startAt: idx)
+                                    } label: {
+                                        TrackRowView(track: track,
+                                                     isPlaying: player.currentTrack?.searchKey == track.searchKey)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .swipeActions {
+                                        Button(role: .destructive) {
+                                            library.toggleLike(track)
+                                        } label: {
+                                            Label("Убрать", systemImage: "heart.slash")
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                    .listStyle(.plain)
+                    .listStyle(.insetGrouped)
                 }
             }
             .navigationTitle("Библиотека")
@@ -63,7 +87,7 @@ struct LibraryView: View {
                     defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                     library.addLocalFile(from: url, fileName: url.lastPathComponent)
                 }
-            .onAppear { library.reloadLiked() }
+            .onAppear { library.reload() }
 }
 }
 

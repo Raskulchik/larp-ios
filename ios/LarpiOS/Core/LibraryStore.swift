@@ -26,6 +26,7 @@ final class LibraryStore: ObservableObject {
     func reload() {
         reloadLiked()
         reloadPlaylists()
+        loadLocalFiles()
     }
 
     func reloadLiked() {
@@ -126,19 +127,12 @@ final class LibraryStore: ObservableObject {
             .appendingPathComponent("Downloads", isDirectory: true)
         try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
 
-        let data = (try? Data(contentsOf: src)) ?? Data()
-        let key = data.md5Hex
-        let dest = downloads.appendingPathComponent("\(key).mp3")
-        do {
-            try data.write(to: dest)
-        } catch {
-            return
-        }
+        guard let data = try? Data(contentsOf: src), !data.isEmpty else { return }
 
-        let base = fileName.split(separator: ".").first.map(String.init) ?? fileName
-        let title = base
+        let title = fileName.deletingPathExtension()
+
         let track = Track(
-            id: key,
+            id: data.md5Hex,
             title: title,
             artist: "Локальный файл",
             source: "local",
@@ -146,11 +140,39 @@ final class LibraryStore: ObservableObject {
             artworkUrl: nil,
             durationMs: nil
         )
-        if !localFileKeys.contains(key) {
+        let key = DownloadManager.taskKey(for: track) // md5(searchKey)
+        let dest = downloads.appendingPathComponent("\(key).mp3")
+
+        // Не копируем повторно
+        guard !fm.fileExists(atPath: dest.path) else {
+            if !localFileKeys.contains(track.searchKey) {
+                localFiles.append(track)
+                localFileKeys.insert(track.searchKey)
+                persistLocalFiles()
+            }
+            return
+        }
+
+        do {
+            try data.write(to: dest)
+        } catch {
+            return
+        }
+
+        if !localFileKeys.contains(track.searchKey) {
             localFiles.append(track)
-            localFileKeys.insert(key)
+            localFileKeys.insert(track.searchKey)
             persistLocalFiles()
         }
+    }
+
+    func removeLocalFile(_ track: Track) {
+        if let url = DownloadManager.shared.localFileURL(for: track) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        localFiles.removeAll { $0.searchKey == track.searchKey }
+        localFileKeys.remove(track.searchKey)
+        persistLocalFiles()
     }
 
     private func persistLocalFiles() {
