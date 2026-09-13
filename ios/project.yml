@@ -1,0 +1,57 @@
+name: LarpiOS
+options:
+  bundleIdPrefix: local.larpi
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+targets:
+  LarpiOS:
+    type: application
+    platform: iOS
+    sources:
+      - LarpiOS
+    settings:
+      base:
+        PRODUCT_NAME: Larpi
+        PRODUCT_BUNDLE_IDENTIFIER: local.larpi.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.7"
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_BITCODE: "NO"
+        GENERATE_INFOPLIST_FILE: "NO"
+        # Rust static lib (собирается ios/build-rust.sh → ios/libs/<iphoneos|iphonesimulator>/liblarp_core.a)
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/libs/$(PLATFORM_NAME)"
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Headers"
+        OTHER_LDFLAGS:
+          - "-llarp_core"
+        SWIFT_OBJC_BRIDGING_HEADER: LarpiOS/Bridging-Header.h
+        INFOPLIST_KEY_UIBackgroundModes: ["audio"]
+    info:
+      path: LarpiOS/Info.plist
+      properties:
+        CFBundleDisplayName: Larpi
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSLocalNetworkUsageDescription: Подключение к домашнему серверу скачивания музыки (larp-daemon)
+
+schemes:
+  LarpiOS:
+    build:
+      targets:
+        LarpiOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release

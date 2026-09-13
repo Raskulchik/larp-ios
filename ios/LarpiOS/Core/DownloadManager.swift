@@ -1,0 +1,185 @@
+import Foundation
+
+/// Управление скачиванием через домашний демон (larp-daemon).
+/// Файл качается на Arch-боксе (yt-dlp / yandex), потом передаётся на телефон в Documents/Downloads.
+@MainActor
+final class DownloadManager: ObservableObject {
+    static let shared = DownloadManager()
+
+    struct DownloadTaskInfo {
+        var state: String // queued | downloading | transferring | done | error
+        var progress: Double
+        var fileName: String?
+        var error: String?
+        var isActive: Bool
+    }
+
+    // JobStatus повторяет JSON демона (snake_case → camelCase).
+    private struct JobStatus: Codable {
+        let id: String
+        let source: String
+        let trackId: String
+        let title: String
+        let artist: String
+        let state: String
+        let progress: Double
+        let message: String?
+        let fileName: String?
+        let fileUrl: String?
+        let sizeBytes: Int64?
+    }
+
+    private struct JobResponse: Codable { let job: JobStatus }
+    private struct DownloadResponse: Codable { let job: JobStatus }
+
+    @Published var tasks: [String: DownloadTaskInfo] = [:]
+
+    private let docsDir: URL = {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("Downloads", isDirectory: true)
+    }()
+
+    private var pollers: [String: Task<Void, Never>] = [:]
+
+    private static let jobDecoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return d
+    }()
+
+    private init() {
+        try? FileManager.default.createDirectory(at: docsDir, withIntermediateDirectories: true)
+    }
+
+    private func key(_ track: Track) -> String { track.searchKey.md5Hex }
+    static func taskKey(for track: Track) -> String { track.searchKey.md5Hex }
+    private func fileURL(name: String) -> URL { docsDir.appendingPathComponent(name) }
+
+    func info(for track: Track) -> DownloadTaskInfo? {
+        tasks[Self.taskKey(for: track)]
+    }
+
+    func localFileURL(for track: Track) -> URL? {
+        let name = "\(key(track)).mp3"
+        let url = fileURL(name: name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    func remoteStreamURL(for track: Track) -> URL? {
+        guard let base = AppSettings.shared.daemonBaseURL else { return nil }
+        return base.appendingPathComponent("files").appendingPathComponent("\(key(track)).mp3")
+    }
+
+    /// Уже скачивается/скачано?
+    func isDownloading(_ track: Track) -> Bool {
+        tasks[key(track)]?.isActive == true
+    }
+
+    /// Начать скачивание. onComplete вызовится с локальным URL при успехе.
+    func download(_ track: Track, onComplete: @escaping (URL?) -> Void) {
+        let k = key(track)
+
+        if let local = localFileURL(for: track) {
+            onComplete(local)
+            return
+        }
+        if tasks[k]?.isActive == true {
+            return
+        }
+        guard let base = AppSettings.shared.daemonBaseURL else {
+            tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: "Сервер не настроен", isActive: false)
+            return
+        }
+
+        tasks[k] = DownloadTaskInfo(state: "queued", progress: 0, fileName: nil, error: nil, isActive: true)
+
+        var req = URLRequest(url: base.appendingPathComponent("api/download"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONEncoder().encode([
+            "source": track.source,
+            "track_id": track.id,
+            "title": track.title,
+            "artist": track.artist
+        ])
+
+        let poller = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let (data, resp) = try await URLSession.shared.data(for: req)
+                guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+                    self.complete(k, error: "демон ответил \((resp as? HTTPURLResponse)?.statusCode ?? -1)")
+                    return
+                }
+                let job = try Self.jobDecoder.decode(DownloadResponse.self, from: data).job
+                await self.pollUntilDone(initial: job, key: k, track: track, onComplete: onComplete)
+            } catch {
+                self.complete(k, error: error.localizedDescription)
+            }
+            self.pollers[k] = nil
+        }
+        pollers[k] = poller
+    }
+
+    private func pollUntilDone(initial: JobStatus, key k: String, track: Track, onComplete: @escaping (URL?) -> Void) async {
+        var job = initial
+        if job.state == "done" {
+            await transfer(initial, key: k, track: track, onComplete: onComplete)
+            return
+        }
+        for _ in 0..<360 { // до ~6 минут
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let base = AppSettings.shared.daemonBaseURL else { break }
+            do {
+                let url = base.appendingPathComponent("api/jobs").appendingPathComponent(job.id)
+                let (data, resp) = try await URLSession.shared.data(from: url)
+                guard (resp as? HTTPURLResponse)?.statusCode == 200 else { break }
+                job = try Self.jobDecoder.decode(JobResponse.self, from: data).job
+            } catch { break }
+
+            self.tasks[k]?.progress = job.progress
+            self.tasks[k]?.state = "downloading"
+
+            switch job.state {
+            case "done":
+                await transfer(job, key: k, track: track, onComplete: onComplete)
+                return
+            case "error":
+                complete(k, error: job.message ?? "ошибка скачивания")
+                return
+            default:
+                continue
+            }
+        }
+        complete(k, error: "таймаут ожидания демона")
+    }
+
+    private func transfer(_ job: JobStatus, key k: String, track: Track, onComplete: @escaping (URL?) -> Void) async {
+        guard let base = AppSettings.shared.daemonBaseURL else {
+            complete(k, error: "сервер не настроен")
+            return
+        }
+        let name = "\(k).mp3"
+        tasks[k]?.state = "transferring"
+        tasks[k]?.progress = 100
+
+        do {
+            let url = base.appendingPathComponent("files").appendingPathComponent(name)
+            let (fileURL, resp) = try await URLSession.shared.download(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                complete(k, error: "не удалось получить файл")
+                return
+            }
+            let dest = fileURL(name: name)
+            try FileManager.default.moveItem(at: fileURL, to: dest)
+            tasks[k] = DownloadTaskInfo(state: "done", progress: 100, fileName: name, error: nil, isActive: false)
+            onComplete(FileManager.default.fileExists(atPath: dest.path) ? dest : nil)
+        } catch {
+            complete(k, error: error.localizedDescription)
+        }
+    }
+
+    private func complete(_ k: String, error: String) {
+        tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: error, isActive: false)
+    }
+}

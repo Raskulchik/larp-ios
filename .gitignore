@@ -1,0 +1,6 @@
+/target
+ios/libs
+.DS_Store
+*.pbxuser
+xcuserdata/
+*.xcodeproj

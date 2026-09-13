@@ -1,0 +1,20 @@
+[package]
+name = "larp-core"
+version = "0.1.0"
+edition = "2021"
+
+# staticlib — для линковки в iOS-приложение, rlib — для тестов и daemon.
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+urlencoding = "2"
+serde-xml-rs = "0.8"
+md5 = "0.7"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
