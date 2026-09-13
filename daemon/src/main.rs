@@ -14,6 +14,7 @@ use axum::{
 use jobs::{AppState, Job, job_id};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Debug, Deserialize)]
 struct DownloadReq {
@@ -53,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/:id", get(get_job))
         .route("/files/:name", get(serve_file))
+        .layer(middleware::from_fn(logging))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state);
 
@@ -100,6 +102,21 @@ async fn auth(State(state): State<Arc<AppState>>, req: axum::extract::Request, n
     } else {
         (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"ok": false, "error": "unauthorized"}))).into_response()
     }
+}
+
+async fn logging(req: axum::extract::Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let start = Instant::now();
+    let resp = next.run(req).await;
+    println!(
+        "{} {} → {} {}ms",
+        method,
+        uri,
+        resp.status(),
+        start.elapsed().as_millis()
+    );
+    resp
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
