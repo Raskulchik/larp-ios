@@ -4,11 +4,17 @@ import UniformTypeIdentifiers
 struct LibraryView: View {
     @ObservedObject private var library = LibraryStore.shared
     @ObservedObject private var player = PlayerEngine.shared
+    @State private var isImporting = false
 
     var body: some View {
         NavigationView {
-            Group {
-                if library.liked.isEmpty {
+            groupView
+        }
+    }
+
+    private var groupView: some View {
+        Group {
+            if library.liked.isEmpty {
                     ContentUnavailableViewCompat(
                         systemImage: "heart",
                         title: "Пока пусто",
