@@ -6,7 +6,7 @@ struct PlayerBarView: View {
     @State private var showingPlayer = false
 
     var body: some View {
-        if let track = player.currentTrack {
+        if player.currentTrack != nil {
             HStack(spacing: 12) {
                 Button {
                     showingPlayer = true

@@ -165,13 +165,13 @@ final class DownloadManager: ObservableObject {
 
         do {
             let url = base.appendingPathComponent("files").appendingPathComponent(name)
-            let (fileURL, resp) = try await URLSession.shared.download(from: url)
+            let (tmp, resp) = try await URLSession.shared.download(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                 complete(k, error: "не удалось получить файл")
                 return
             }
             let dest = fileURL(name: name)
-            try FileManager.default.moveItem(at: fileURL, to: dest)
+            try FileManager.default.moveItem(at: tmp, to: dest)
             tasks[k] = DownloadTaskInfo(state: "done", progress: 100, fileName: name, error: nil, isActive: false)
             onComplete(FileManager.default.fileExists(atPath: dest.path) ? dest : nil)
         } catch {

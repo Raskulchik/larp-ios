@@ -36,7 +36,10 @@ final class PlayerEngine: ObservableObject {
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
-            self?.currentTime = time.seconds
+            let seconds = time.seconds
+            DispatchQueue.main.async {
+                self?.currentTime = seconds
+            }
         }
     }
 

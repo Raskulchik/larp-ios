@@ -52,7 +52,7 @@ struct TrackRowView: View {
                 }
             }
             Spacer()
-            if let d = Int64(track.durationMs ?? 0), d > 0 {
+            if let d = track.durationMs, d > 0 {
                 Text(secondsText(Double(d) / 1000.0))
                     .font(.caption)
                     .foregroundColor(.secondary)

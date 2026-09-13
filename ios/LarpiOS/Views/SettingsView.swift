@@ -26,11 +26,20 @@ struct SettingsView: View {
                 }
 
                 Section(footer: Text("Скачивание идёт через демон на компьютере: он сам качает (yt-dlp / прямые ссылки Yandex) и раздаёт mp3 по Wi-Fi.")) {
-                    LabeledContent("Сервер", value: settings.daemonBaseURL?.absoluteString ?? "не настроен")
-                    LabeledContent("Версия ядра", value: RustBridge.shared.version)
+                    row(title: "Сервер", value: settings.daemonBaseURL?.absoluteString ?? "не настроен")
+                    row(title: "Версия ядра", value: RustBridge.shared.version)
                 }
             }
             .navigationTitle("Настройки")
+        }
+    }
+
+    private func row(title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value)
+                .foregroundColor(.secondary)
         }
     }
 

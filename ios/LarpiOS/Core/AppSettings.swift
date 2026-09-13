@@ -26,7 +26,7 @@ final class AppSettings: ObservableObject {
     }
 
     var daemonBaseURL: URL? {
-        var host = daemonHost.trimmingCharacters(in: .whitespaces)
+        let host = daemonHost.trimmingCharacters(in: .whitespaces)
         guard !host.isEmpty else { return nil }
         let port = Int(daemonPort.trimmingCharacters(in: .whitespaces)) ?? 47110
         var comps = URLComponents()
