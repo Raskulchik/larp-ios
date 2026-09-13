@@ -50,6 +50,14 @@ struct EmptyResult: Decodable {}
 
 // ========== Утилиты ==========
 
+extension Data {
+    /// MD5 по байтам (CryptoKit Insecure.MD5) — для ключа локального файла.
+    var md5Hex: String {
+        Insecure.MD5.hash(data: self).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+
 extension String {
     var md5Hex: String {
         Insecure.MD5.hash(data: Data(utf8)).map { String(format: "%02x", $0) }.joined()

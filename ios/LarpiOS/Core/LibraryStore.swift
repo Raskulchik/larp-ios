@@ -127,7 +127,7 @@ final class LibraryStore: ObservableObject {
         try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
 
         let data = (try? Data(contentsOf: src)) ?? Data()
-        let key = String(data).md5Hex
+        let key = data.md5Hex
         let dest = downloads.appendingPathComponent("\(key).mp3")
         do {
             try data.write(to: dest)
@@ -154,6 +154,7 @@ final class LibraryStore: ObservableObject {
     }
 
     private func persistLocalFiles() {
+        let fm = FileManager.default
         guard let data = try? JSONEncoder().encode(localFiles) else { return }
         let url = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalFiles.json")
@@ -161,6 +162,7 @@ final class LibraryStore: ObservableObject {
     }
 
     private func loadLocalFiles() {
+        let fm = FileManager.default
         let url = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalFiles.json")
         guard let data = try? Data(contentsOf: url) else { return }

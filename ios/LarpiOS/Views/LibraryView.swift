@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @ObservedObject private var library = LibraryStore.shared
