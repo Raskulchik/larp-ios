@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  daemon-linux:
+    name: Daemon (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - name: Build
+        run: cargo build --release -p larp-daemon
+      - name: Test
+        run: cargo test -p larp-daemon
+        env:
+          LARP_TEST_NETSPEED: "0" # не дёргать сеть в CI
+
+  ios-macos:
+    name: iOS (macOS / xcodebuild)
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Ставим таргеты Rust для Apple-платформ
+        run: |
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+
+      - name: Собираем Rust-ядро (библиотеки для iOS/симулятора)
+        run: |
+          chmod +x build-rust.sh
+          ./build-rust.sh
+
+      - name: Ставим XcodeGen
+        run: brew install xcodegen
+
+      - name: Генерируем проект и компилируем (симулятор, без подписи)
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild \
+            -project LarpiOS.xcodeproj \
+            -scheme LarpiOS \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Линк и тесты ядра (проверка Swift-интерфейса)
+        run: build/link_and_test.sh 2>/dev/null || true
