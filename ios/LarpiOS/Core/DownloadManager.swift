@@ -93,7 +93,7 @@ final class DownloadManager: ObservableObject {
 
         tasks[k] = DownloadTaskInfo(state: "queued", progress: 0, fileName: nil, error: nil, isActive: true)
 
-        var req = URLRequest(url: base.appendingPathComponent("api/download"))
+        var req = AppSettings.shared.request(base.appendingPathComponent("api/download"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONEncoder().encode([
@@ -132,7 +132,7 @@ final class DownloadManager: ObservableObject {
             guard let base = AppSettings.shared.daemonBaseURL else { break }
             do {
                 let url = base.appendingPathComponent("api/jobs").appendingPathComponent(job.id)
-                let (data, resp) = try await URLSession.shared.data(from: url)
+                let (data, resp) = try await URLSession.shared.data(for: AppSettings.shared.request(url))
                 guard (resp as? HTTPURLResponse)?.statusCode == 200 else { break }
                 job = try Self.jobDecoder.decode(JobResponse.self, from: data).job
             } catch { break }
@@ -165,7 +165,7 @@ final class DownloadManager: ObservableObject {
 
         do {
             let url = base.appendingPathComponent("files").appendingPathComponent(name)
-            let (tmp, resp) = try await URLSession.shared.download(from: url)
+            let (tmp, resp) = try await URLSession.shared.download(for: AppSettings.shared.request(url))
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                 complete(k, error: "не удалось получить файл")
                 return

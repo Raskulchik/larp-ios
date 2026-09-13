@@ -56,6 +56,19 @@ else
   echo "конфиг уже есть — не трогаем: $CONF"
 fi
 
+# Токен доступа к API демона: нужен, если демон открыт в интернет через Cloudflare Tunnel.
+if [ -z "$(python3 -c "import json;print(json.load(open('$CONF')).get('auth_token','') or '')" 2>/dev/null)" ]; then
+  AUTH=$(openssl rand -hex 16 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  python3 - "$CONF" "$AUTH" <<'EOF'
+import json,sys
+p,t=sys.argv[1],sys.argv[2]
+c=json.load(open(p))
+c["auth_token"]=t
+json.dump(c,open(p,"w"),ensure_ascii=False,indent=2)
+EOF
+  echo "==> сгенерирован auth_token (понадобится на телефоне в Настройках): $AUTH"
+fi
+
 echo "==> systemd user unit + автозапуск"
 mkdir -p "$HOME/.config/systemd/user"
 cp larp-daemon.service "$HOME/.config/systemd/user/"

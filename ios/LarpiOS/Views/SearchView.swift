@@ -121,7 +121,7 @@ struct SearchView: View {
 
         Task {
             do {
-                let (data, resp) = try await URLSession.shared.data(from: url)
+                let (data, resp) = try await URLSession.shared.data(for: settings.request(url))
                 if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
                     let msg = Self.searchError(from: data) ?? "демон ответил \(http.statusCode)"
                     throw NSError(domain: "search", code: http.statusCode,
