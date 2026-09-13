@@ -129,7 +129,7 @@ final class LibraryStore: ObservableObject {
 
         guard let data = try? Data(contentsOf: src), !data.isEmpty else { return }
 
-        let title = fileName.deletingPathExtension()
+        let title = (fileName as NSString).deletingPathExtension
 
         let track = Track(
             id: data.md5Hex,
