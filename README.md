@@ -44,6 +44,12 @@ Firewall при необходимости (см. вывод setup.sh): откр
 Конфиг демона: `~/.config/larp-daemon/config.json`
 (`yandex_token`, `port`, `auth_token` — можно поставить токен для доступа к API демона).
 
+Куки для yt-dlp (SoundCloud / YouTube Music):
+- `ytdlp_cookies_browser` — браузер для `--cookies-from-browser`: `"firefox"` или
+  путь к профилю типа `"firefox:/home/user/.config/mozilla/firefox/xxx.default-release"`
+  (нужно, если профиль Firefox не лежит в `~/.mozilla`).
+- `ytdlp_cookies` — путь к cookies.txt в формате Netscape (если `ytdlp_cookies_browser` пуст).
+
 ### API демона (кратко)
 - `POST /api/download` `{"source":"ytmusic","track_id":"...","title":"...","artist":"..."}` → job
 - `GET  /api/jobs`, `GET /api/jobs/:id` → статус скачивания

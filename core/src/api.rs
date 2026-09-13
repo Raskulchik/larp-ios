@@ -342,6 +342,40 @@ struct ScFormat {
     mime_type: String,
 }
 
+/// По id трека получаем нормальную ссылку soundcloud.com/<user>/<slug> —
+/// yt-dlp умеет качать только такие, API-ссылки он не разбирает.
+pub async fn soundcloud_permalink(track_id: &str) -> anyhow::Result<String> {
+    let client_id = get_sc_client_id().await?;
+
+    let url = format!(
+        "{}/tracks/{}?client_id={}",
+        SC_API,
+        urlencoding::encode(track_id),
+        urlencoding::encode(&client_id)
+    );
+
+    let resp = sc_request(&reqwest::Client::new(), &url)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() || body.trim().is_empty() || body.trim() == "{}" {
+        SC_CLIENT_ID.lock().unwrap().take();
+        anyhow::bail!("SoundCloud track not found (HTTP {status}): {}", &body[..body.len().min(200)]);
+    }
+
+    let v: serde_json::Value = serde_json::from_str(&body)?;
+    if v.get("id").is_none() {
+        SC_CLIENT_ID.lock().unwrap().take();
+        anyhow::bail!("SoundCloud track not found: {}", &body[..body.len().min(200)]);
+    }
+
+    v.get("permalink_url")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("no permalink_url in SoundCloud track response"))
+}
+
 pub async fn search_soundcloud(query: &str) -> anyhow::Result<Vec<Track>> {
     let client_id = get_sc_client_id().await?;
 

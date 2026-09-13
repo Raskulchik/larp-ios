@@ -55,8 +55,8 @@ async fn run_download(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow::Re
 
     match job.source.as_str() {
         "yandex" => download_yandex(state, job).await,
-        "ytmusic" => download_ytd(state, job, true).await,
-        "soundcloud" => download_ytd(state, job, false).await,
+        "ytmusic" => download_ytd(state, job, YtdKind::YoutubeMusic).await,
+        "soundcloud" => download_ytd(state, job, YtdKind::SoundCloud).await,
         other => anyhow::bail!("unknown source: {other}"),
     }
 }
@@ -118,12 +118,20 @@ async fn download_yandex(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow:
     Ok(())
 }
 
-async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, is_ytm: bool) -> anyhow::Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YtdKind {
+    YoutubeMusic,
+    SoundCloud,
+}
+
+async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, kind: YtdKind) -> anyhow::Result<()> {
     let conf = &state.conf;
-    let url = if is_ytm {
-        format!("https://music.youtube.com/watch?v={}", job.track_id)
-    } else {
-        format!("https://api.soundcloud.com/tracks/{}", job.track_id)
+    let url = match kind {
+        YtdKind::YoutubeMusic => {
+            format!("https://music.youtube.com/watch?v={}", job.track_id)
+        }
+        // yt-dlp качает SoundCloud только по ссылке вида soundcloud.com/user/track, а не по API.
+        YtdKind::SoundCloud => larp_core::api::soundcloud_permalink(&job.track_id).await?,
     };
 
     let final_path = conf.files_dir().join(file_name_for(&job.id));
@@ -132,14 +140,21 @@ async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, is_ytm: bool)
     let mut cmd = Command::new(&conf.ytdlp);
     cmd.args(["--newline", "--no-playlist", "-x"])
         .args(["--audio-format", "mp3", "--audio-quality", "128K"])
-        .args(["-f", "bestaudio"])
+        .args(["-f", "bestaudio/best"])
         .args(["--force-overwrites", "--no-part"])
         .arg("-o")
         .arg(format!("{}.%(ext)s", tmp_base.display()))
         .arg(&url);
 
-    if is_ytm {
+    if kind == YtdKind::YoutubeMusic {
         cmd.args(["--extractor-args", "youtube:player_client=mweb"]);
+    }
+
+    // YouTube Music / некоторые SoundCloud-треки отдают без кук только «Sign in to play» или 404.
+    if !conf.ytdlp_cookies_browser.is_empty() {
+        cmd.args(["--cookies-from-browser", &conf.ytdlp_cookies_browser]);
+    } else if !conf.ytdlp_cookies.is_empty() {
+        cmd.args(["--cookies", &conf.ytdlp_cookies]);
     }
 
     let mut child = cmd.stdout(std::process::Stdio::piped())

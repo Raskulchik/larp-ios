@@ -64,6 +64,13 @@ async fn main() -> anyhow::Result<()> {
     } else {
         println!("yandex token: NOT configured (so only soundcloud/ytmusic work)");
     }
+    if !conf.ytdlp_cookies_browser.is_empty() {
+        println!("yt-dlp cookies: from browser '{}'", conf.ytdlp_cookies_browser);
+    } else if !conf.ytdlp_cookies.is_empty() {
+        println!("yt-dlp cookies: from file {}", conf.ytdlp_cookies);
+    } else {
+        println!("yt-dlp cookies: NOT configured (YouTube Music / SoundCloud may need cookies from Firefox)");
+    }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;

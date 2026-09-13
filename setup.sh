@@ -26,6 +26,8 @@ if [ ! -f "$CONF" ]; then
   "yandex_token": "",
   "download_dir": "$HOME/.local/share/larp-daemon",
   "ytdlp": "yt-dlp",
+  "ytdlp_cookies": "",
+  "ytdlp_cookies_browser": "firefox",
   "auth_token": ""
 }
 EOF

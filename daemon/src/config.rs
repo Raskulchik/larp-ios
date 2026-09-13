@@ -14,6 +14,12 @@ pub struct Config {
     pub yandex_token: String,
     pub download_dir: PathBuf,
     pub ytdlp: String,
+    /// Путь к cookies.txt (формат Netscape) для yt-dlp (SoundCloud / YouTube Music).
+    #[serde(default)]
+    pub ytdlp_cookies: String,
+    /// Браузер для --cookies-from-browser, например "firefox". Имеет приоритет над ytdlp_cookies.
+    #[serde(default)]
+    pub ytdlp_cookies_browser: String,
     pub auth_token: String,
 }
 
@@ -25,6 +31,8 @@ impl Default for Config {
             yandex_token: String::new(),
             download_dir: home().join(".local").join("share").join("larp-daemon"),
             ytdlp: "yt-dlp".to_string(),
+            ytdlp_cookies: String::new(),
+            ytdlp_cookies_browser: String::new(),
             auth_token: String::new(),
         }
     }
@@ -57,6 +65,16 @@ impl Config {
         if let Ok(dir) = std::env::var("LARP_DOWNLOAD_DIR") {
             if !dir.is_empty() {
                 cfg.download_dir = dir.into();
+            }
+        }
+        if let Ok(cookies) = std::env::var("LARP_YTDLP_COOKIES") {
+            if !cookies.is_empty() {
+                cfg.ytdlp_cookies = cookies;
+            }
+        }
+        if let Ok(browser) = std::env::var("LARP_YTDLP_COOKIES_BROWSER") {
+            if !browser.is_empty() {
+                cfg.ytdlp_cookies_browser = browser;
             }
         }
 
