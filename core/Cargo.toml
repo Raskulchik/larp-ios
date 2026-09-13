@@ -1,6 +1,6 @@
 [package]
 name = "larp-core"
-version = "0.1.0"
+version = "0.6.7"
 edition = "2021"
 
 # staticlib — для линковки в iOS-приложение, rlib — для тестов и daemon.
