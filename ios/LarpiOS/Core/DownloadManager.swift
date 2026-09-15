@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Управление скачиванием через домашний демон (larp-daemon).
 /// Файл качается на Arch-боксе (yt-dlp / yandex), потом передаётся на телефон в Documents/Downloads.
@@ -45,6 +46,11 @@ final class DownloadManager: ObservableObject {
     @Published private(set) var bulk: BulkDownload?
     @Published private(set) var bulkActive = false
     private var bulkTask: Task<Void, Never>?
+
+    // Фоновое продление: iOS даёт процессу время после сворачивания,
+    // пока идёт скачивание (периодически перезапрашиваем).
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    private var lastBgRearm = Date()
 
     private let docsDir: URL = {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -208,6 +214,7 @@ final class DownloadManager: ObservableObject {
         }
         bulkActive = true
         bulk = BulkDownload(total: pending.count, done: 0, failed: 0)
+        rearmBackground()
 
         let concurrency = 3
         bulkTask?.cancel()
@@ -231,6 +238,7 @@ final class DownloadManager: ObservableObject {
                 }
             }
             bulkActive = false
+            endBackground()
         }
     }
 
@@ -239,12 +247,34 @@ final class DownloadManager: ObservableObject {
         bulkTask = nil
         bulkActive = false
         bulk = nil
+        endBackground()
     }
 
     /// Ждёт, пока все ключи закончат скачивание (done/error).
     private func waitSignals(_ keys: [String]) async {
         while !keys.allSatisfy({ tasks[$0]?.state == "done" || tasks[$0]?.state == "error" }) {
+            rearmBackground()
             try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+    }
+
+    // ============ фоновый режим ============
+
+    /// Попросить iOS не усыплять приложение, пока качаем (перезапрашиваем каждые ~20 с).
+    private func rearmBackground() {
+        guard bgTask == .invalid, Date().timeIntervalSince(lastBgRearm) > 20 else { return }
+        lastBgRearm = Date()
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "larp-bulk-download") { [weak self] in
+            DispatchQueue.main.async {
+                self?.bgTask = .invalid
+            }
+        }
+    }
+
+    private func endBackground() {
+        if bgTask != .invalid {
+            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask = .invalid
         }
     }
 }

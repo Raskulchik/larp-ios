@@ -54,7 +54,7 @@ struct LibraryView: View {
                                     .buttonStyle(.plain)
                                     .swipeActions {
                                         Button(role: .destructive) {
-                                            library.toggleLike(track)
+                                            library.toggleLike(track, autoDownload: true)
                                         } label: {
                                             Label("Убрать", systemImage: "heart.slash")
                                         }
@@ -87,7 +87,10 @@ struct LibraryView: View {
                     defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                     library.addLocalFile(from: url, fileName: url.lastPathComponent)
                 }
-            .onAppear { library.reload() }
+            .onAppear {
+                library.reloadLiked(autoDownload: true)
+                library.loadLocalFiles()
+            }
 }
 }
 

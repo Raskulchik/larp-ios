@@ -23,11 +23,17 @@ final class LibraryStore: ObservableObject {
         loadLocalFiles()
     }
 
-    func reloadLiked() {
+    func reloadLiked(autoDownload: Bool = false) {
         Task {
             if let all = try? await DaemonAPI.liked() {
                 self.liked = all
                 self.likedKeySet = Set(all.map { $0.searchKey })
+                // Вкладка «Библиотека»: после загрузки списка лайков автоматом качаем
+                // их на телефон. Уже скачанные и уже качающиеся пропускаются, файлы,
+                // которые демон уже скачал на комп, передаются с компа, а не качаются заново.
+                if autoDownload {
+                    DownloadManager.shared.downloadAll(all)
+                }
             }
             refreshYandexLikes()
         }
@@ -53,14 +59,18 @@ final class LibraryStore: ObservableObject {
 
     // ============ лайки ============
 
-    func toggleLike(_ track: Track) {
+    func toggleLike(_ track: Track, autoDownload: Bool = false) {
         Task {
             if likedKeySet.contains(track.searchKey) {
                 try? await DaemonAPI.unlike(source: track.source, trackId: track.id)
             } else {
                 try? await DaemonAPI.like(track)
+                // Новый лайк из «Библиотеки» тоже качаем сразу.
+                if autoDownload {
+                    DownloadManager.shared.download(track) { _ in }
+                }
             }
-            reloadLiked()
+            reloadLiked(autoDownload: autoDownload)
         }
     }
 
