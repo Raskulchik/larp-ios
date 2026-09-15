@@ -8,16 +8,18 @@ struct LikedPlaylistView: View {
 
     var body: some View {
         Group {
-            if library.yandexLikesLoading {
-                Spacer()
-                ProgressView("Загружаю лайки…")
-                Spacer()
-            } else if library.yandexLiked.isEmpty {
-                ContentUnavailableViewCompat(
-                    systemImage: "heart",
-                    title: "Пока нет лайков",
-                    message: "Лайкай треки в Яндекс Музыке — они подтянутся автоматически"
-                )
+            if library.yandexLiked.isEmpty {
+                if library.yandexLikesLoading {
+                    Spacer()
+                    ProgressView("Загружаю лайки…")
+                    Spacer()
+                } else {
+                    ContentUnavailableViewCompat(
+                        systemImage: "heart",
+                        title: "Пока нет лайков",
+                        message: "Лайкай треки в Яндекс Музыке — они подтянутся автоматически"
+                    )
+                }
             } else {
                 List {
                     ForEach(Array(library.yandexLiked.enumerated()), id: \.element.searchKey) { idx, track in

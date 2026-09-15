@@ -65,12 +65,32 @@ final class LibraryStore: ObservableObject {
     }
 
     func refreshYandexLikes() {
+        // Оффлайн-first: сразу показываем кэш «Лайков из Яндекс Музыки».
+        yandexLiked = loadCachedYandexLikes()
         Task {
             yandexLikesLoading = true
             defer { yandexLikesLoading = false }
             if let likes = try? await DaemonAPI.yandexLikes() {
-                self.yandexLiked = likes
+                yandexLiked = likes
+                saveCachedYandexLikes(likes)
             }
+            // Сети нет — остаётся кэш.
+        }
+    }
+
+    private func cachedYandexLikesURL() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("YandexLikesCache.json")
+    }
+
+    private func loadCachedYandexLikes() -> [Track] {
+        guard let data = try? Data(contentsOf: cachedYandexLikesURL()) else { return [] }
+        return (try? JSONDecoder().decode([Track].self, from: data)) ?? []
+    }
+
+    private func saveCachedYandexLikes(_ tracks: [Track]) {
+        if let data = try? JSONEncoder().encode(tracks) {
+            try? data.write(to: cachedYandexLikesURL())
         }
     }
 
