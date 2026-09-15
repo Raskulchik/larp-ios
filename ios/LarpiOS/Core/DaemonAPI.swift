@@ -16,7 +16,7 @@ enum DaemonAPI {
         body: Data? = nil,
         query: [URLQueryItem] = []
     ) async throws -> [String: Any] {
-        guard let base = AppSettings.shared.daemonBaseURL else {
+        guard let base = await AppSettings.shared.daemonBaseURL else {
             throw DaemonAPIError(message: "Сервер не настроен (IP в Настройках)")
         }
         var comps = URLComponents(url: base.appendingPathComponent(path),
@@ -26,7 +26,7 @@ enum DaemonAPI {
         }
         guard let url = comps.url else { throw DaemonAPIError(message: "Некорректный адрес") }
 
-        var req = AppSettings.shared.request(url)
+        var req = await AppSettings.shared.request(url)
         req.httpMethod = method
         if let body {
             req.httpBody = body
