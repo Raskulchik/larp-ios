@@ -42,6 +42,11 @@ struct LikedPlaylistView: View {
         }
         .navigationTitle("Лайки из Яндекс Музыки")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                DownloadAllButton(tracks: library.yandexLiked)
+            }
+        }
         .onAppear { library.reloadLiked() }
     }
 }

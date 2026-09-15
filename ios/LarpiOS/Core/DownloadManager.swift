@@ -14,6 +14,13 @@ final class DownloadManager: ObservableObject {
         var isActive: Bool
     }
 
+    /// Прогресс массового скачивания плейлиста.
+    struct BulkDownload {
+        var total: Int
+        var done: Int
+        var failed: Int
+    }
+
     // JobStatus повторяет JSON демона (snake_case → camelCase).
     private struct JobStatus: Codable {
         let id: String
@@ -33,6 +40,11 @@ final class DownloadManager: ObservableObject {
     private struct DownloadResponse: Codable { let job: JobStatus }
 
     @Published var tasks: [String: DownloadTaskInfo] = [:]
+
+    /// Массовое скачивание плейлиста целиком.
+    @Published private(set) var bulk: BulkDownload?
+    @Published private(set) var bulkActive = false
+    private var bulkTask: Task<Void, Never>?
 
     private let docsDir: URL = {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -181,5 +193,58 @@ final class DownloadManager: ObservableObject {
 
     private func complete(_ k: String, error: String) {
         tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: error, isActive: false)
+    }
+
+    // ============ массовое скачивание плейлиста ============
+
+    /// Скачивает все треки списка локально на телефон (по 3 параллельно).
+    /// Уже скачанные и качающиеся пропускаются. Повторный запуск пока идёт — игнорируется.
+    func downloadAll(_ tracks: [Track]) {
+        guard !bulkActive else { return }
+        let pending = tracks.filter { localFileURL(for: $0) == nil && !isDownloading($0) }
+        guard !pending.isEmpty else {
+            bulk = nil
+            return
+        }
+        bulkActive = true
+        bulk = BulkDownload(total: pending.count, done: 0, failed: 0)
+
+        let concurrency = 3
+        bulkTask?.cancel()
+        bulkTask = Task { @MainActor in
+            var index = 0
+            while index < pending.count && !Task.isCancelled {
+                let end = min(index + concurrency, pending.count)
+                let slice = Array(pending[index..<end])
+                index = end
+                let keys = slice.map { key($0) }
+                for track in slice {
+                    download(track) { _ in }
+                }
+                await waitSignals(keys)
+                for k in keys {
+                    if let st = tasks[k], st.state == "done" {
+                        bulk?.done += 1
+                    } else {
+                        bulk?.failed += 1
+                    }
+                }
+            }
+            bulkActive = false
+        }
+    }
+
+    func cancelBulk() {
+        bulkTask?.cancel()
+        bulkTask = nil
+        bulkActive = false
+        bulk = nil
+    }
+
+    /// Ждёт, пока все ключи закончат скачивание (done/error).
+    private func waitSignals(_ keys: [String]) async {
+        while !keys.allSatisfy({ tasks[$0]?.state == "done" || tasks[$0]?.state == "error" }) {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
     }
 }

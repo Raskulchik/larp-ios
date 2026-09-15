@@ -38,6 +38,11 @@ struct PlaylistDetailView: View {
         }
         .navigationTitle(playlist.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                DownloadAllButton(tracks: tracks)
+            }
+        }
         .task { tracks = await library.tracks(playlist) }
     }
 }
