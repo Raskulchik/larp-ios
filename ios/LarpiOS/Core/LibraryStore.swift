@@ -179,7 +179,7 @@ final class LibraryStore: ObservableObject {
         try? data.write(to: url)
     }
 
-    private func loadLocalFiles() {
+    func loadLocalFiles() {
         let fm = FileManager.default
         let url = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalFiles.json")
