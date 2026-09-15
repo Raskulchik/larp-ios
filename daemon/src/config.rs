@@ -16,6 +16,10 @@ pub struct Config {
     /// Общая с TUI-плеером база лайков/плейлистов music-player-tui.
     #[serde(default)]
     pub db_path: PathBuf,
+    /// Папка, куда TUI-плеер качает mp3 (файлы вида «Артист - Название.mp3»).
+    /// Если трек там уже есть, демон не качает его заново, а отдаёт файл с диска компа.
+    #[serde(default)]
+    pub tui_downloads_dir: PathBuf,
     pub ytdlp: String,
     /// Путь к cookies.txt (формат Netscape) для yt-dlp (SoundCloud / YouTube Music).
     #[serde(default)]
@@ -36,6 +40,10 @@ impl Default for Config {
                 .join(".config")
                 .join("music-player-tui")
                 .join("liked.db"),
+            tui_downloads_dir: home()
+                .join(".cache")
+                .join("music-player-tui")
+                .join("downloads"),
             ytdlp: "yt-dlp".to_string(),
             ytdlp_cookies: String::new(),
             ytdlp_cookies_browser: String::new(),
@@ -79,6 +87,14 @@ impl Config {
         }
         if cfg.db_path.as_os_str().is_empty() {
             cfg.db_path = Config::default().db_path;
+        }
+        if let Ok(dir) = std::env::var("LARP_TUI_DOWNLOADS_DIR") {
+            if !dir.is_empty() {
+                cfg.tui_downloads_dir = dir.into();
+            }
+        }
+        if cfg.tui_downloads_dir.as_os_str().is_empty() {
+            cfg.tui_downloads_dir = Config::default().tui_downloads_dir;
         }
         if let Ok(cookies) = std::env::var("LARP_YTDLP_COOKIES") {
             if !cookies.is_empty() {

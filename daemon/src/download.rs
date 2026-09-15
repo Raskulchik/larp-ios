@@ -62,6 +62,24 @@ async fn run_download(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow::Re
         return Ok(());
     }
 
+    // Трек уже скачан TUI-плеером (файлы «Артист - Название.mp3» в tui_downloads_dir)?
+    // Тогда не качаем заново — симлинк на файл с компа, phone тянет его по локальной сети.
+    if !conf.tui_downloads_dir.as_os_str().is_empty() && conf.tui_downloads_dir.is_dir() {
+        if let Some(src) = tui_download_match(&conf.tui_downloads_dir, &job.artist, &job.title) {
+            std::os::unix::fs::symlink(&src, &final_path)?;
+            let size = std::fs::metadata(&final_path)?.len();
+            update(state, &job.id, |j| {
+                j.state = "done".into();
+                j.progress = 100.0;
+                j.file_name = Some(file_name_for(&job.id));
+                j.file_url = Some(format!("/files/{}", file_name_for(&job.id)));
+                j.size_bytes = Some(size);
+                j.message = "found in TUI downloads".into();
+            }).await;
+            return Ok(());
+        }
+    }
+
     update(state, &job.id, |j| j.state = "running".into()).await;
 
     match job.source.as_str() {
@@ -236,4 +254,55 @@ fn parse_ytdlp_progress(line: &str) -> Option<f32> {
         return cap.get(1).and_then(|m| m.as_str().parse::<f32>().ok());
     }
     None
+}
+
+/// Находит в папке скачанного TUI-плеером файл вида «Артист - Название.mp3»,
+/// совпадающий с запрошенным треком (нормализация: регистр и лишние пробелы).
+pub fn tui_download_match(dir: &std::path::Path, artist: &str, title: &str) -> Option<std::path::PathBuf> {
+    let norm = |s: &str| -> String {
+        s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    };
+    let want_artist = norm(artist.trim());
+    let want_title = norm(title.trim());
+    if want_artist.is_empty() || want_title.is_empty() {
+        return None;
+    }
+
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let lower = name.to_lowercase();
+        if !lower.ends_with(".mp3") {
+            continue;
+        }
+        let stem = &name[..name.len() - ".mp3".len()];
+        let (file_artist, file_title) = match stem.split_once(" - ") {
+            Some((a, t)) => (a, t),
+            None => continue,
+        };
+        if norm(file_artist) == want_artist && norm(file_title) == want_title {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tui_match_finds_file_ignoring_case_and_spaces() {
+        let dir = std::env::temp_dir().join(format!("larp-tui-match-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Battlejuice - Made Of Steel.mp3"), b"data").unwrap();
+        std::fs::write(dir.join("Other - track.mp3"), b"x").unwrap();
+
+        let found = tui_download_match(&dir, "battlejuice", "Made   of Steel").unwrap();
+        assert_eq!(
+            found.file_name().unwrap().to_string_lossy(),
+            "Battlejuice - Made Of Steel.mp3"
+        );
+        assert!(tui_download_match(&dir, "Nobody", "Nothing").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

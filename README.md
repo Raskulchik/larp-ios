@@ -46,7 +46,13 @@ Firewall при необходимости (см. вывод setup.sh): откр
 
 Конфиг демона: `~/.config/larp-daemon/config.json`
 (`yandex_token`, `port`, `db_path` — путь к общей базе, по умолчанию
-`~/.config/music-player-tui/liked.db`).
+`~/.config/music-player-tui/liked.db`; `tui_downloads_dir` — папка, куда
+TUI-плеер качает mp3 («Артист - Название.mp3»), по умолчанию
+`~/.cache/music-player-tui/downloads`).
+
+Если трек уже скачан TUI-плеером (или самим демоном), запрос на скачивание
+не качает его заново из интернета: демон сразу отдаёт готовый файл с диска
+компа, а телефон забирает его по локальной сети.
 
 Куки для yt-dlp (SoundCloud / YouTube Music):
 - `ytdlp_cookies_browser` — браузер для `--cookies-from-browser`: `"firefox"` или
