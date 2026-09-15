@@ -25,9 +25,16 @@ final class LibraryStore: ObservableObject {
 
     func reloadLiked(autoDownload: Bool = false) {
         Task {
+            // Библиотека должна быть видна сразу — даже без сети. Показываем локальный кэш,
+            // затем обновляемся с демона. Если сети нет — остаётся кэш, и уже скачанные
+            // на телефон треки играют с диска.
+            self.liked = loadCachedLiked()
+            self.likedKeySet = Set(self.liked.map { $0.searchKey })
+
             if let all = try? await DaemonAPI.liked() {
                 self.liked = all
                 self.likedKeySet = Set(all.map { $0.searchKey })
+                saveCachedLiked(all)
                 // Вкладка «Библиотека»: после загрузки списка лайков автоматом качаем
                 // их на телефон. Уже скачанные и уже качающиеся пропускаются, файлы,
                 // которые демон уже скачал на комп, передаются с компа, а не качаются заново.
@@ -36,6 +43,24 @@ final class LibraryStore: ObservableObject {
                 }
             }
             refreshYandexLikes()
+        }
+    }
+
+    // ============ оффлайн-кэш списка лайков ============
+
+    private func cachedLikedURL() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LikedCache.json")
+    }
+
+    private func loadCachedLiked() -> [Track] {
+        guard let data = try? Data(contentsOf: cachedLikedURL()) else { return [] }
+        return (try? JSONDecoder().decode([Track].self, from: data)) ?? []
+    }
+
+    private func saveCachedLiked(_ tracks: [Track]) {
+        if let data = try? JSONEncoder().encode(tracks) {
+            try? data.write(to: cachedLikedURL())
         }
     }
 
