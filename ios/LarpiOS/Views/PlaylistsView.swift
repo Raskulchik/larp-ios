@@ -7,15 +7,29 @@ struct PlaylistsView: View {
 
     var body: some View {
         NavigationView {
-            Group {
-                if library.playlists.isEmpty {
-                    ContentUnavailableViewCompat(
-                        systemImage: "music.note.list",
-                        title: "Нет плейлистов",
-                        message: "Нажми «+» сверху, чтобы создать"
-                    )
-                } else {
-                    List {
+            List {
+                NavigationLink {
+                    LikedPlaylistView()
+                } label: {
+                    HStack {
+                        Image(systemName: "heart.fill")
+                            .foregroundColor(.red)
+                            .frame(width: 32)
+                        VStack(alignment: .leading) {
+                            Text("Лайки из Яндекс Музыки").font(.headline)
+                            Text("\(library.yandexLiked.count) трек\(pluralSuffix(library.yandexLiked.count)) из аккаунта Яндекс Музыки")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                Section("Мои плейлисты") {
+                    if library.playlists.isEmpty {
+                        Text("Нет плейлистов — создай через «+» сверху")
+                            .foregroundColor(.secondary)
+                    } else {
                         ForEach(library.playlists) { playlist in
                             NavigationLink {
                                 PlaylistDetailView(playlist: playlist)
@@ -23,6 +37,7 @@ struct PlaylistsView: View {
                                 HStack {
                                     Image(systemName: "music.note.list")
                                         .foregroundColor(.accentColor)
+                                        .frame(width: 32)
                                     VStack(alignment: .leading) {
                                         Text(playlist.name).font(.headline)
                                         Text("\(playlist.count) трек\(pluralSuffix(playlist.count))")
@@ -39,9 +54,9 @@ struct PlaylistsView: View {
                             }
                         }
                     }
-                    .listStyle(.plain)
                 }
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Плейлисты")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -56,7 +71,10 @@ struct PlaylistsView: View {
                 Button("Создать") { library.createPlaylist(name: newName) }
                 Button("Отмена", role: .cancel) {}
             }
-            .onAppear { library.reloadPlaylists() }
+            .onAppear {
+                library.reloadPlaylists()
+                library.reloadLiked()
+            }
         }
     }
 

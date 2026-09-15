@@ -2,7 +2,7 @@ use rusqlite::{Connection, params};
 use std::path::Path;
 use crate::api::{Source, Track};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Playlist {
     pub id: i64,
     pub name: String,

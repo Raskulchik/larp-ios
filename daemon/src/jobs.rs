@@ -1,8 +1,29 @@
 use crate::config::Config;
+use larp_core::api::Track;
+use larp_core::db::{Database, Playlist};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+
+const YANDEX_LIKES_TTL: Duration = Duration::from_secs(300);
+
+/// Кэш лайков аккаунта Яндекс Музыки («Мне нравится»), постранично из API.
+#[derive(Debug, Clone)]
+pub struct CachedLikes {
+    pub tracks: Vec<Track>,
+    pub fetched_at: Instant,
+}
+
+impl Default for CachedLikes {
+    fn default() -> Self {
+        CachedLikes {
+            tracks: Vec::new(),
+            fetched_at: Instant::now() - YANDEX_LIKES_TTL,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
@@ -48,13 +69,19 @@ impl Job {
 pub struct AppState {
     pub jobs: RwLock<HashMap<String, Job>>,
     pub conf: Config,
+    /// Общая с music-player-tui база лайков/плейлистов (SQLite, доступ последовательный).
+    pub db: Mutex<Database>,
+    /// Кэш «Мне нравится» из API Яндекс Музыки.
+    pub yandex_likes_cache: tokio::sync::Mutex<CachedLikes>,
 }
 
 impl AppState {
-    pub fn new(conf: Config) -> Arc<Self> {
+    pub fn new(conf: Config, db: Database) -> Arc<Self> {
         Arc::new(AppState {
             jobs: RwLock::new(HashMap::new()),
             conf,
+            db: Mutex::new(db),
+            yandex_likes_cache: tokio::sync::Mutex::new(CachedLikes::default()),
         })
     }
 
@@ -72,6 +99,67 @@ impl AppState {
         let mut v: Vec<Job> = map.values().cloned().collect();
         v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         v
+    }
+
+    // ============ shared database (likes / playlists) ============
+
+    pub fn like(&self, track: &Track) -> anyhow::Result<()> {
+        self.db.lock().unwrap().like_track(track)
+    }
+
+    pub fn unlike(&self, source: &str, track_id: &str) -> anyhow::Result<()> {
+        let src = larp_core::api::Source::from_str(source)
+            .ok_or_else(|| anyhow::anyhow!("unknown source: {source}"))?;
+        self.db.lock().unwrap().unlike_track(&src, track_id)
+    }
+
+    pub fn liked(&self, source: Option<&str>) -> anyhow::Result<Vec<Track>> {
+        let db = self.db.lock().unwrap();
+        let tracks = db.get_liked()?;
+        match source {
+            Some(s) if !s.is_empty() => {
+                Ok(tracks.into_iter().filter(|t| t.source.as_str() == s).collect())
+            }
+            _ => Ok(tracks),
+        }
+    }
+
+    pub fn playlists(&self) -> anyhow::Result<Vec<Playlist>> {
+        self.db.lock().unwrap().get_playlists()
+    }
+
+    pub fn create_playlist(&self, name: &str) -> anyhow::Result<i64> {
+        self.db.lock().unwrap().create_playlist(name)
+    }
+
+    pub fn delete_playlist(&self, id: i64) -> anyhow::Result<()> {
+        self.db.lock().unwrap().delete_playlist(id)
+    }
+
+    pub fn playlist_tracks(&self, id: i64) -> anyhow::Result<Vec<Track>> {
+        self.db.lock().unwrap().get_playlist_tracks(id)
+    }
+
+    pub fn add_to_playlist(&self, id: i64, track: &Track) -> anyhow::Result<()> {
+        self.db.lock().unwrap().add_to_playlist(id, track)
+    }
+
+    pub fn remove_from_playlist(&self, id: i64, source: &str, track_id: &str) -> anyhow::Result<()> {
+        let src = larp_core::api::Source::from_str(source)
+            .ok_or_else(|| anyhow::anyhow!("unknown source: {source}"))?;
+        self.db.lock().unwrap().remove_from_playlist(id, &src, track_id)
+    }
+
+    /// Лайки аккаунта Яндекс Музыки с кэшированием на 5 минут.
+    pub async fn yandex_likes(&self) -> anyhow::Result<Vec<Track>> {
+        let mut cache = self.yandex_likes_cache.lock().await;
+        if !cache.tracks.is_empty() && cache.fetched_at.elapsed() < YANDEX_LIKES_TTL {
+            return Ok(cache.tracks.clone());
+        }
+        let tracks = larp_core::api::get_yandex_likes(&self.conf.yandex_token).await?;
+        cache.tracks = tracks.clone();
+        cache.fetched_at = Instant::now();
+        Ok(tracks)
     }
 }
 

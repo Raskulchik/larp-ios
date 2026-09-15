@@ -166,33 +166,186 @@ pub async fn search_yandex(query: &str, token: &str) -> anyhow::Result<Vec<Track
         .unwrap_or_default()
         .into_iter()
         .filter(|t| t.available.unwrap_or(false))
-        .map(|t| {
-            let id = match &t.id {
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::String(s) => s.clone(),
-                _ => "0".to_string(),
-            };
-            let artist = t.artists.first()
-                .and_then(|a| a.name.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-            let artwork_url = t.cover_uri.map(|uri| {
-                format!("https://{}", uri.replace("%%", "400x400"))
-            });
-            Track {
-                id,
-                title: t.title.unwrap_or_default(),
-                artist,
-                source: Source::YandexMusic,
-                preview_url: None,
-                artwork_url,
-                duration_ms: t.duration_ms,
-                album: None,
-                year: None,
-            }
-        })
+        .map(ym_track_to_track)
         .collect();
 
     Ok(tracks)
+}
+
+fn ym_track_to_track(t: YmTrack) -> Track {
+    let id = match &t.id {
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        _ => "0".to_string(),
+    };
+    let artist = t.artists.first()
+        .and_then(|a| a.name.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let artwork_url = t.cover_uri.map(|uri| {
+        format!("https://{}", uri.replace("%%", "400x400"))
+    });
+    Track {
+        id,
+        title: t.title.unwrap_or_default(),
+        artist,
+        source: Source::YandexMusic,
+        preview_url: None,
+        artwork_url,
+        duration_ms: t.duration_ms,
+        album: None,
+        year: None,
+    }
+}
+
+// ============ Yandex Music: лайки аккаунта («Мне нравится») ============
+
+const YM_PAGE_SIZE: usize = 100;
+const YM_MAX_PAGES: usize = 100; // до 10 000 треков
+const YM_TRACK_BATCH: usize = 100; // id треков на один запрос /tracks
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YmStatusResponse {
+    result: YmStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YmStatus {
+    account: YmAccount,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YmAccount {
+    uid: i64,
+}
+
+async fn yandex_uid(token: &str) -> anyhow::Result<i64> {
+    let url = format!("{}/account/status", YM_API);
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header("Authorization", format!("OAuth {}", clean_token(token)))
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Yandex account status HTTP {}: {}", status, body);
+    }
+    let text = resp.text().await?;
+    let resp: YmStatusResponse = serde_json::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("Yandex status parse error: {} | body: {}", e, &text[..text.len().min(500)]))?;
+    Ok(resp.result.account.uid)
+}
+
+/// Все лайки аккаунта («Мне нравится») из Яндекс Музыки.
+///
+/// `/users/{uid}/likes/tracks` отдаёт только ссылки (id, albumId, timestamp),
+/// поэтому детали треков дотаскиваем табличным запросом `/tracks?track-ids=…`.
+pub async fn get_yandex_likes(token: &str) -> anyhow::Result<Vec<Track>> {
+    if token.is_empty() {
+        anyhow::bail!("Yandex token is not configured");
+    }
+
+    let uid = yandex_uid(token).await?;
+    let client = reqwest::Client::new();
+
+    // 1. id лайкнутых треков. API может игнорировать page-size и отдавать всё сразу —
+    //    дедуплицируем и останавливаемся, когда новая страница не добавила id.
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    for page in 0..YM_MAX_PAGES {
+        let url = format!(
+            "{}/users/{}/likes/tracks?page={}&page-size={}",
+            YM_API, uid, page, YM_PAGE_SIZE
+        );
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("OAuth {}", clean_token(token)))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Yandex likes HTTP {}: {}", status, body);
+        }
+        let text = resp.text().await?;
+        let page_ids = parse_likes_ids(&text)
+            .map_err(|e| anyhow::anyhow!("Yandex likes parse error: {} | body: {}", e, &text[..text.len().min(500)]))?;
+        if page_ids.is_empty() {
+            break;
+        }
+        let mut added = 0;
+        for id in page_ids {
+            if seen.insert(id.clone()) {
+                ids.push(id);
+                added += 1;
+            }
+        }
+        if added == 0 {
+            break;
+        }
+    }
+
+    // 2. Детали треков батчами.
+    let mut tracks = Vec::with_capacity(ids.len());
+    for chunk in ids.chunks(YM_TRACK_BATCH) {
+        let ids_csv = chunk.join(",");
+        let url = format!("{}/tracks?track-ids={}", YM_API, ids_csv);
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("OAuth {}", clean_token(token)))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Yandex tracks HTTP {}: {}", status, body);
+        }
+        let text = resp.text().await?;
+        let root: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("Yandex tracks parse error: {} | body: {}", e, &text[..text.len().min(500)]))?;
+        if let Some(items) = root.get("result").and_then(|r| r.as_array()) {
+            for item in items {
+                if item.is_null() || item.get("error").is_some() {
+                    continue;
+                }
+                if let Ok(t) = serde_json::from_value::<YmTrack>(item.clone()) {
+                    tracks.push(ym_track_to_track(t));
+                }
+            }
+        }
+    }
+
+    Ok(tracks)
+}
+
+/// Достаёт id лайкнутых треков из ответа /users/{uid}/likes/tracks
+/// (детали треков там не отдаются — только ссылки; путь result.library.tracks).
+fn parse_likes_ids(text: &str) -> anyhow::Result<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(text)?;
+    let Some(result) = v.get("result") else {
+        return Ok(Vec::new());
+    };
+    let arr = result
+        .pointer("/library/tracks")
+        .or_else(|| result.get("tracks"))
+        .or_else(|| if result.is_array() { Some(result) } else { None });
+    let Some(arr) = arr else {
+        return Ok(Vec::new());
+    };
+    let mut ids = Vec::new();
+    if let Some(list) = arr.as_array() {
+        for item in list {
+            match item.get("id") {
+                Some(serde_json::Value::Number(n)) => ids.push(n.to_string()),
+                Some(serde_json::Value::String(s)) => ids.push(s.clone()),
+                _ => {}
+            }
+        }
+    }
+    Ok(ids)
 }
 
 pub async fn get_yandex_download_url(track_id: &str, token: &str) -> anyhow::Result<String> {
@@ -664,5 +817,22 @@ mod tests {
         assert_eq!(v["id"], "v1");
         assert!(v.get("previewUrl").is_none(), "absent fields omitted");
         assert_eq!(v["artworkUrl"], "http://img");
+    }
+
+    #[test]
+    fn ym_likes_ids_parses() {
+        // Формат /users/{uid}/likes/tracks: только ссылки id/albumId/timestamp
+        let text = r#"{"result":{"isWritable":true,"library":{"uid":1,"revision":1,"tracks":[
+            {"id":144220916,"albumId":25670052,"timestamp":"2025-01-01T00:00:00Z"},
+            {"id":"144220917","albumId":25670052,"timestamp":"2025-01-01T00:00:00Z"}
+        ]}}}"#;
+        let ids = parse_likes_ids(text).unwrap();
+        assert_eq!(ids, vec!["144220916", "144220917"]);
+
+        // Пустой результат
+        assert!(parse_likes_ids(r#"{"result":null}"#).unwrap().is_empty());
+        // Старый плоский формат result.tracks
+        let old = r#"{"result":{"tracks":[{"id":100},{"id":101}]}}"#;
+        assert_eq!(parse_likes_ids(old).unwrap().len(), 2);
     }
 }

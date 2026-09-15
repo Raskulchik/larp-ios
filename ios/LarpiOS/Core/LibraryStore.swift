@@ -1,26 +1,20 @@
 import Foundation
 
-/// Хранилища (лайки/плейлисты) поверх larp-core. Все тяжёлые вызовы — через BridgeQueue.
+/// Хранилища (лайки/плейлисты) поверх общей с music-player-tui базы через демон.
 @MainActor
 final class LibraryStore: ObservableObject {
     static let shared = LibraryStore()
 
     @Published var liked: [Track] = []
+    /// Лайки аккаунта Яндекс Музыки («Мне нравится») — берём из API Яндекса через демон,
+    /// а не из локальной базы.
+    @Published var yandexLiked: [Track] = []
+    @Published var yandexLikesLoading = false
     @Published var playlists: [PlaylistInfo] = []
     @Published var likedKeySet: Set<String> = []
 
     private init() {
-        bootstrap()
-    }
-
-    /// Открыть БД в Documents при первом запуске.
-    func bootstrap() {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-        BridgeQueue.shared.run {
-            try RustBridge.shared.dbOpen(directory: dir)
-        } then: { _ in
-            self.reload()
-        }
+        reload()
     }
 
     func reload() {
@@ -30,21 +24,28 @@ final class LibraryStore: ObservableObject {
     }
 
     func reloadLiked() {
-        BridgeQueue.shared.run {
-            try RustBridge.shared.getLiked()
-        } then: { result in
-            if case .success(let tracks) = result {
-                self.liked = tracks
-                self.likedKeySet = Set(tracks.map { $0.searchKey })
+        Task {
+            if let all = try? await DaemonAPI.liked() {
+                self.liked = all
+                self.likedKeySet = Set(all.map { $0.searchKey })
+            }
+            refreshYandexLikes()
+        }
+    }
+
+    func refreshYandexLikes() {
+        Task {
+            yandexLikesLoading = true
+            defer { yandexLikesLoading = false }
+            if let likes = try? await DaemonAPI.yandexLikes() {
+                self.yandexLiked = likes
             }
         }
     }
 
     func reloadPlaylists() {
-        BridgeQueue.shared.run {
-            try RustBridge.shared.playlistList()
-        } then: { result in
-            if case .success(let pls) = result {
+        Task {
+            if let pls = try? await DaemonAPI.playlists() {
                 self.playlists = pls
             }
         }
@@ -53,18 +54,13 @@ final class LibraryStore: ObservableObject {
     // ============ лайки ============
 
     func toggleLike(_ track: Track) {
-        if likedKeySet.contains(track.searchKey) {
-            BridgeQueue.shared.run {
-                try RustBridge.shared.unlike(source: track.source, trackId: track.id)
-            } then: { _ in
-                self.reloadLiked()
+        Task {
+            if likedKeySet.contains(track.searchKey) {
+                try? await DaemonAPI.unlike(source: track.source, trackId: track.id)
+            } else {
+                try? await DaemonAPI.like(track)
             }
-        } else {
-            BridgeQueue.shared.run {
-                try RustBridge.shared.like(track)
-            } then: { _ in
-                self.reloadLiked()
-            }
+            reloadLiked()
         }
     }
 
@@ -73,45 +69,35 @@ final class LibraryStore: ObservableObject {
     func createPlaylist(name: String) {
         let clean = name.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return }
-        BridgeQueue.shared.run {
-            try RustBridge.shared.createPlaylist(name: clean)
-        } then: { _ in
-            self.reloadPlaylists()
+        Task {
+            try? await DaemonAPI.createPlaylist(name: clean)
+            reloadPlaylists()
         }
     }
 
     func deletePlaylist(_ playlist: PlaylistInfo) {
-        BridgeQueue.shared.run {
-            try RustBridge.shared.playlistDelete(id: playlist.id)
-        } then: { _ in
-            self.reloadPlaylists()
+        Task {
+            try? await DaemonAPI.deletePlaylist(id: playlist.id)
+            reloadPlaylists()
         }
     }
 
     func addToPlaylist(_ playlist: PlaylistInfo, track: Track) {
-        BridgeQueue.shared.run {
-            try RustBridge.shared.playlistAdd(id: playlist.id, track: track)
-        } then: { _ in
-            self.reloadPlaylists()
+        Task {
+            try? await DaemonAPI.addToPlaylist(id: playlist.id, track: track)
+            reloadPlaylists()
         }
     }
 
     func removeFromPlaylist(_ playlist: PlaylistInfo, track: Track) {
-        BridgeQueue.shared.run {
-            try RustBridge.shared.playlistRemove(id: playlist.id, source: track.source, trackId: track.id)
-        } then: { _ in
-            self.reloadPlaylists()
+        Task {
+            try? await DaemonAPI.removeFromPlaylist(id: playlist.id, source: track.source, trackId: track.id)
+            reloadPlaylists()
         }
     }
 
     func tracks(_ playlist: PlaylistInfo) async -> [Track] {
-        await withCheckedContinuation { cont in
-            BridgeQueue.shared.run {
-                try RustBridge.shared.playlistTracks(id: playlist.id)
-            } then: { result in
-                cont.resume(returning: (try? result.get()) ?? [])
-            }
-        }
+        (try? await DaemonAPI.playlistTracks(id: playlist.id)) ?? []
     }
 
     // ============ файлы с телефона ============

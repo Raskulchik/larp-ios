@@ -13,6 +13,9 @@ pub struct Config {
     pub port: u16,
     pub yandex_token: String,
     pub download_dir: PathBuf,
+    /// Общая с TUI-плеером база лайков/плейлистов music-player-tui.
+    #[serde(default)]
+    pub db_path: PathBuf,
     pub ytdlp: String,
     /// Путь к cookies.txt (формат Netscape) для yt-dlp (SoundCloud / YouTube Music).
     #[serde(default)]
@@ -20,7 +23,6 @@ pub struct Config {
     /// Браузер для --cookies-from-browser, например "firefox". Имеет приоритет над ytdlp_cookies.
     #[serde(default)]
     pub ytdlp_cookies_browser: String,
-    pub auth_token: String,
 }
 
 impl Default for Config {
@@ -30,10 +32,13 @@ impl Default for Config {
             port: DEFAULT_PORT,
             yandex_token: String::new(),
             download_dir: home().join(".local").join("share").join("larp-daemon"),
+            db_path: home()
+                .join(".config")
+                .join("music-player-tui")
+                .join("liked.db"),
             ytdlp: "yt-dlp".to_string(),
             ytdlp_cookies: String::new(),
             ytdlp_cookies_browser: String::new(),
-            auth_token: String::new(),
         }
     }
 }
@@ -66,6 +71,14 @@ impl Config {
             if !dir.is_empty() {
                 cfg.download_dir = dir.into();
             }
+        }
+        if let Ok(db) = std::env::var("LARP_DB_PATH") {
+            if !db.is_empty() {
+                cfg.db_path = db.into();
+            }
+        }
+        if cfg.db_path.as_os_str().is_empty() {
+            cfg.db_path = Config::default().db_path;
         }
         if let Ok(cookies) = std::env::var("LARP_YTDLP_COOKIES") {
             if !cookies.is_empty() {

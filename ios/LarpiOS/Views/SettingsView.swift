@@ -7,15 +7,12 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(footer: Text("IP компьютера с larp-daemon (например 192.168.1.10) или домен туннеля (larp.example.com). HTTPS включи, если ходишь через Cloudflare Tunnel.")) {
+                Section(footer: Text("IP компьютера с larp-daemon (например 192.168.1.10). Демон работает только в локальной сети, туннель не нужен.")) {
                     TextField("Адрес демона", text: $settings.daemonHost)
                         .keyboardType(.numbersAndPunctuation)
                         .autocorrectionDisabled()
                     TextField("Порт", text: $settings.daemonPort)
                         .keyboardType(.numberPad)
-                    Toggle("HTTPS (туннель)", isOn: $settings.useHTTPS)
-                    SecureField("Токен доступа (auth_token)", text: $settings.authToken)
-                        .autocorrectionDisabled()
                     Button("Проверить подключение") { checkHealth() }
                     if let healthText {
                         Text(healthText)
@@ -24,8 +21,8 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(footer: Text("Yandex-токен живёт на компьютере в ~/.config/larp-daemon/config.json — телефону он не нужен. VPN и туннель не нужны на домашнем Wi-Fi; через Cloudflare Tunnel работает и вне дома.")) {
-                    Text("Поиск и скачивание идут через демон: дома по Wi-Fi, вне дома — через туннель.")
+                Section(footer: Text("Yandex-токен живёт на компьютере в ~/.config/music-player-tui/config.json — телефону он не нужен. Лайки и плейлисты хранятся в общей с music-player-tui базе (~/.config/music-player-tui/liked.db).")) {
+                    Text("Поиск, скачивание и библиотека идут через демон по локальной сети.")
                 }
 
                 Section(footer: Text("Скачивание идёт через демон на компьютере: он сам качает (yt-dlp / прямые ссылки Yandex) и раздаёт mp3 по Wi-Fi.")) {

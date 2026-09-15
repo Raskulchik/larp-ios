@@ -3,7 +3,9 @@
 Перенос механик TUI-плеера (`~/music-player-tui`) в iOS-приложение:
 
 - Плейлисты, лайки, поиск: **Yandex Music**, **SoundCloud**, **YouTube Music**
+- Лайки и плейлисты — в **общей базе** с TUI-плеером (`~/.config/music-player-tui/liked.db`), на телефоне видно то же, что и в music-player-tui
 - Скачивание идёт **через домашний компьютер**: демон `larp-daemon` качает (yt-dlp / прямые ссылки Yandex) и раздаёт mp3 по Wi-Fi — телефон получает готовые файлы
+- Демон работает **только в локальной сети** (http, без туннеля)
 - Discord RPC убран полностью
 - Плеер: системный **AVPlayer** (фоновая игра, Control Center, Now Playing)
 - GUI: SwiftUI
@@ -31,6 +33,7 @@ cd ~/larp-ios
 
 Что делает: соберёт `larp-daemon`, скопирует в `~/.local/bin`, подтянет Yandex-токен из
 `~/.config/music-player-tui/config.json`, включит сервис `systemctl --user enable --now larp-daemon`.
+Лайки и плейлисты демон читает/пишет прямо в базу TUI-плеера `~/.config/music-player-tui/liked.db`.
 
 Проверка из браузера/curl:
 ```bash
@@ -42,7 +45,8 @@ Firewall при необходимости (см. вывод setup.sh): откр
 Узнать IP для телефона: `hostname -I`.
 
 Конфиг демона: `~/.config/larp-daemon/config.json`
-(`yandex_token`, `port`, `auth_token` — можно поставить токен для доступа к API демона).
+(`yandex_token`, `port`, `db_path` — путь к общей базе, по умолчанию
+`~/.config/music-player-tui/liked.db`).
 
 Куки для yt-dlp (SoundCloud / YouTube Music):
 - `ytdlp_cookies_browser` — браузер для `--cookies-from-browser`: `"firefox"` или
@@ -53,6 +57,14 @@ Firewall при необходимости (см. вывод setup.sh): откр
 ### API демона (кратко)
 - `POST /api/download` `{"source":"ytmusic","track_id":"...","title":"...","artist":"..."}` → job
 - `GET  /api/jobs`, `GET /api/jobs/:id` → статус скачивания
+- `GET  /api/liked[?source=yandex]` → лайки из общей базы (фильтр по источнику)
+- `POST /api/like` (трек JSON), `POST /api/unlike` `{"source","track_id"}`
+- `GET  /api/yandex-likes` → реальные лайки аккаунта Яндекс Музыки (POST, кэш 5 мин, 400 если токен не настроен, 502 при ошибке API)
+- `GET  /api/playlists`, `POST /api/playlists` `{"name"}`,
+  `DELETE /api/playlists/:id`,
+  `GET /api/playlists/:id/tracks`,
+  `POST /api/playlists/:id/tracks` (трек JSON),
+  `DELETE /api/playlists/:id/tracks` `{"source","track_id"}`
 - `GET  /files/<md5>.mp3` → файл (Range/206 поддерживается — нужен для seek в AVPlayer)
 
 ## 2. Сборка iOS-приложения (нужен Mac c Xcode)
@@ -80,19 +92,23 @@ open ios/LarpiOS.xcodeproj
 ## 3. Настройка на телефоне
 
 Настройки → указать IP компьютера + порт (47110) → «Проверить подключение».
-Yandex-токен вводить на телефоне не нужно — он живёт на компьютере
-(в `~/.config/larp-daemon/config.json`), поиск идёт через демон, VPN на телефоне не нужен.
+Только домашний Wi-Fi (локальная сеть, http без туннеля). Yandex-токен вводить
+на телефоне не нужно — он живёт на компьютере (в `~/.config/music-player-tui/config.json`),
+поиск идёт через демон, VPN на телефоне не нужен.
+
+Лайки и плейлисты на телефоне — те же, что в TUI-плеере (общая база). В разделе
+«Плейлисты» сверху есть плейлист **«Мне нравится»** — лайки из Яндекс Музыки.
 
 ## Как играет
 
-- Трек: локальный mp3 из Documents → играет сразу.
+- Трек из лайков/плейлиста: скачивается через демон → играет локальный файл (прогресс виден в строке трека).
 - SoundCloud: сразу играет HLS-превью из поиска.
-- Yandex/YT Music: отправляется задание на демон → качается на компьютер →
+- Yandex/YT Music из поиска: задание на демон → качается на компьютер →
   передаётся на телефон → играет уже локальный файл (прогресс виден в строке трека).
 
 ## Проверки (можно с Linux)
 
 ```bash
-cargo test                # 7 тестов: db/ffi core + range/имя-файла daemon
+cargo test                # 8 тестов: db/ffi core + range/имя-файла daemon
 cd daemon && cargo run    # поднять демон локально, curl'ами гонять
 ```

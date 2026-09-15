@@ -1,4 +1,5 @@
 mod config;
+mod dbapi;
 mod download;
 mod jobs;
 mod lyrics;
@@ -9,7 +10,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use jobs::{AppState, Job, job_id};
 use serde::{Deserialize, Serialize};
@@ -44,7 +45,12 @@ async fn main() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(conf.files_dir())?;
 
-    let state = AppState::new(conf.clone());
+    // Общая с TUI-плеером база лайков/плейлистов.
+    let db = larp_core::db::Database::open_at(&conf.db_path)
+        .map_err(|e| anyhow::anyhow!("open shared db {}: {e}", conf.db_path.display()))?;
+    println!("shared db: {}", conf.db_path.display());
+
+    let state = AppState::new(conf.clone(), db);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -55,8 +61,22 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs/:id", get(get_job))
         .route("/files/:name", get(serve_file))
         .route("/api/thumb", get(thumb))
+        .route("/api/liked", get(dbapi::get_liked))
+        .route("/api/like", post(dbapi::like_track))
+        .route("/api/unlike", post(dbapi::unlike_track))
+        .route("/api/yandex-likes", get(dbapi::yandex_likes))
+        .route(
+            "/api/playlists",
+            get(dbapi::list_playlists).post(dbapi::create_playlist),
+        )
+        .route("/api/playlists/:id", delete(dbapi::delete_playlist))
+        .route(
+            "/api/playlists/:id/tracks",
+            get(dbapi::get_playlist_tracks)
+                .post(dbapi::add_playlist_track)
+                .delete(dbapi::remove_playlist_track),
+        )
         .layer(middleware::from_fn(logging))
-        .layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state);
 
     let addr = format!("{}:{}", conf.listen, conf.port);
@@ -85,24 +105,6 @@ fn config_file_path() -> std::path::PathBuf {
         .join(".config")
         .join("larp-daemon")
         .join("config.json")
-}
-
-async fn auth(State(state): State<Arc<AppState>>, req: axum::extract::Request, next: Next) -> Response {
-    let expected = state.conf.auth_token.trim();
-    if expected.is_empty() {
-        return next.run(req).await;
-    }
-    let ok = req
-        .headers()
-        .get("x-larp-token")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim() == expected)
-        .unwrap_or(false);
-    if ok {
-        next.run(req).await
-    } else {
-        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"ok": false, "error": "unauthorized"}))).into_response()
-    }
 }
 
 async fn logging(req: axum::extract::Request, next: Next) -> Response {

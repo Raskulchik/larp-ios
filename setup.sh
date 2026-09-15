@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Установка larp-daemon на Arch: бинарник в ~/.local/bin, конфиг в ~/.config/larp-daemon,
-# автозапуск через systemd --user.
+# автозапуск через systemd --user. Демон отдаёт музыку только в локальной сети (без туннеля),
+# лайки/плейлисты — из общей с music-player-tui базы ~/.config/music-player-tui/liked.db.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,12 +26,14 @@ if [ ! -f "$CONF" ]; then
   "port": 47110,
   "yandex_token": "",
   "download_dir": "$HOME/.local/share/larp-daemon",
+  "db_path": "$HOME/.config/music-player-tui/liked.db",
   "ytdlp": "yt-dlp",
   "ytdlp_cookies": "",
-  "ytdlp_cookies_browser": "firefox",
-  "auth_token": ""
+  "ytdlp_cookies_browser": "firefox"
 }
 EOF
+  # конфиг выше пишется из quoted-heredoc, поэтому разворачиваем $HOME руками
+  sed -i "s|\$HOME|$HOME|g" "$CONF"
   # Подтянуть токен из music-player-tui, если он там есть.
   if [ -f "$HOME/.config/music-player-tui/config.json" ]; then
     TOKEN=$(python3 - "$HOME/.config/music-player-tui/config.json" <<'EOF' 2>/dev/null || true
@@ -56,19 +59,6 @@ else
   echo "конфиг уже есть — не трогаем: $CONF"
 fi
 
-# Токен доступа к API демона: нужен, если демон открыт в интернет через Cloudflare Tunnel.
-if [ -z "$(python3 -c "import json;print(json.load(open('$CONF')).get('auth_token','') or '')" 2>/dev/null)" ]; then
-  AUTH=$(openssl rand -hex 16 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  python3 - "$CONF" "$AUTH" <<'EOF'
-import json,sys
-p,t=sys.argv[1],sys.argv[2]
-c=json.load(open(p))
-c["auth_token"]=t
-json.dump(c,open(p,"w"),ensure_ascii=False,indent=2)
-EOF
-  echo "==> сгенерирован auth_token (понадобится на телефоне в Настройках): $AUTH"
-fi
-
 echo "==> systemd user unit + автозапуск"
 mkdir -p "$HOME/.config/systemd/user"
 cp larp-daemon.service "$HOME/.config/systemd/user/"
@@ -78,8 +68,11 @@ systemctl --user --no-pager status larp-daemon | head -12
 
 echo
 echo "Конфиг:      $CONF"
+echo "Токен доступа к демону не нужен — демон доступен только в локальной сети."
 PY=$(python3 -c "import json;print('yes' if json.load(open('$CONF')).get('yandex_token') else 'no')" 2>/dev/null || echo "?")
 echo "Yandex token: $PY"
+echo "База лайков/плейлистов (общая с music-player-tui):"
+python3 -c "import json;print('  '+json.load(open('$CONF')).get('db_path',''))" 2>/dev/null || true
 echo "Порт:        47110"
 echo "IP компьютера (указать на телефоне):"
 hostname -I 2>/dev/null | awk '{print "  " $1}' || true
