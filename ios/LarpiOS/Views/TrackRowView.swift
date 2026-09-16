@@ -22,10 +22,15 @@ struct TrackArtworkView: View {
 
     private func load() async {
         image = nil
+        if let cached = ArtworkCache.cachedImage(for: url) {
+            image = cached
+            return
+        }
         guard let proxied = AppSettings.shared.thumbURL(for: url) else { return }
         let req = AppSettings.shared.request(proxied)
         if let (data, _) = try? await URLSession.shared.data(for: req),
            let img = UIImage(data: data) {
+            ArtworkCache.cache(img, for: url)
             image = img
         }
     }

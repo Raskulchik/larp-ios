@@ -192,6 +192,7 @@ final class DownloadManager: ObservableObject {
             try FileManager.default.moveItem(at: tmp, to: dest)
             tasks[k] = DownloadTaskInfo(state: "done", progress: 100, fileName: name, error: nil, isActive: false)
             onComplete(FileManager.default.fileExists(atPath: dest.path) ? dest : nil)
+            Task { await ArtworkCache.prefetch(track.artworkUrl) }
         } catch {
             complete(k, error: error.localizedDescription)
         }

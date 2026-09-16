@@ -242,6 +242,11 @@ final class PlayerEngine: ObservableObject {
 
     private func loadArtwork(_ track: Track) {
         artworkTask?.cancel()
+        if let cached = ArtworkCache.cachedImage(for: track.artworkUrl) {
+            artwork = cached
+            updateNowPlaying(track)
+            return
+        }
         guard let proxied = AppSettings.shared.thumbURL(for: track.artworkUrl) else {
             artwork = nil
             return
@@ -250,6 +255,7 @@ final class PlayerEngine: ObservableObject {
             let req = AppSettings.shared.request(proxied)
             if let (data, _) = try? await URLSession.shared.data(for: req),
                let img = UIImage(data: data) {
+                ArtworkCache.cache(img, for: track.artworkUrl)
                 await MainActor.run {
                     self.artwork = img
                     self.updateNowPlaying(track)
