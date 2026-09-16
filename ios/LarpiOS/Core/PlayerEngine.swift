@@ -148,8 +148,8 @@ final class PlayerEngine: ObservableObject {
             "title": currentTrack?.title ?? "",
             "artist": currentTrack?.artist ?? ""
         ]
-        if let d = duration, d > 0 {
-            body["duration_ms"] = Int64(d * 1000)
+        if duration > 0 {
+            body["duration_ms"] = Int64(duration * 1000)
         }
         if currentTime > 0 {
             body["position_ms"] = Int64(currentTime * 1000)
