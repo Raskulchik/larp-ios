@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 pub const DEFAULT_PORT: u16 = 47110;
 
+/// Тот же Discord App ID, что и у music-player-tui (см. ~/music-player-tui/src/config.rs).
+pub const DEFAULT_DISCORD_CLIENT_ID: &str = "1409612809859366932";
+
 fn home() -> PathBuf {
     std::env::var("HOME").unwrap_or_else(|_| ".".to_string()).into()
 }
@@ -27,6 +30,9 @@ pub struct Config {
     /// Браузер для --cookies-from-browser, например "firefox". Имеет приоритет над ytdlp_cookies.
     #[serde(default)]
     pub ytdlp_cookies_browser: String,
+    /// Discord Application ID для Rich Presence (тот же, что в music-player-tui).
+    #[serde(default)]
+    pub discord_client_id: String,
 }
 
 impl Default for Config {
@@ -47,6 +53,7 @@ impl Default for Config {
             ytdlp: "yt-dlp".to_string(),
             ytdlp_cookies: String::new(),
             ytdlp_cookies_browser: String::new(),
+            discord_client_id: DEFAULT_DISCORD_CLIENT_ID.to_string(),
         }
     }
 }

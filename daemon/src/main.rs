@@ -1,5 +1,6 @@
 mod config;
 mod dbapi;
+mod discord_rpc;
 mod download;
 mod jobs;
 mod lyrics;
@@ -65,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/like", post(dbapi::like_track))
         .route("/api/unlike", post(dbapi::unlike_track))
         .route("/api/yandex-likes", get(dbapi::yandex_likes))
+        .route("/api/rpc/state", post(rpc_state))
         .route(
             "/api/playlists",
             get(dbapi::list_playlists).post(dbapi::create_playlist),
@@ -105,6 +107,49 @@ fn config_file_path() -> std::path::PathBuf {
         .join(".config")
         .join("larp-daemon")
         .join("config.json")
+}
+
+/// Статус проигрывания с телефона для Discord Rich Presence.
+#[derive(Debug, Deserialize)]
+struct RpcStateReq {
+    enabled: bool,
+    #[serde(default)]
+    playing: bool,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    artist: String,
+    #[serde(default)]
+    artwork_url: Option<String>,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    position_ms: Option<u64>,
+}
+
+async fn rpc_state(State(state): State<Arc<AppState>>, Json(req): Json<RpcStateReq>) -> Response {
+    let Some(rpc) = state.discord.as_ref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": "discord rpc is disabled on daemon (нет discord_client_id)"})),
+        )
+            .into_response();
+    };
+
+    if !req.enabled || !req.playing {
+        rpc.clear();
+    } else {
+        rpc.set_activity(
+            &req.title,
+            &req.artist,
+            req.artwork_url.as_deref(),
+            req.duration_ms,
+            "Playing",
+            req.position_ms,
+            true,
+        );
+    }
+    Json(serde_json::json!({"ok": true})).into_response()
 }
 
 async fn logging(req: axum::extract::Request, next: Next) -> Response {

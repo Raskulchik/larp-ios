@@ -116,6 +116,7 @@ final class PlayerEngine: ObservableObject {
         isPlaying = true
         updateNowPlaying(track)
         loadArtwork(track)
+        pushDiscordRPC()
     }
 
     func togglePlayPause() {
@@ -126,12 +127,41 @@ final class PlayerEngine: ObservableObject {
         }
         isPlaying = !isPlaying
         updateNowPlayingInfo()
+        pushDiscordRPC()
     }
 
     func seek(to seconds: Double) {
         guard seconds.isFinite, seconds >= 0 else { return }
         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
         currentTime = seconds
+        pushDiscordRPC()
+    }
+
+    // ============ Discord Rich Presence ============
+
+    /// Отправить состояние проигрывания демону → Discord (если включено в Настройках).
+    func pushDiscordRPC() {
+        guard let base = AppSettings.shared.daemonBaseURL else { return }
+        var body: [String: Any] = [
+            "enabled": AppSettings.shared.discordRPCEnabled,
+            "playing": isPlaying,
+            "title": currentTrack?.title ?? "",
+            "artist": currentTrack?.artist ?? ""
+        ]
+        if let d = duration, d > 0 {
+            body["duration_ms"] = Int64(d * 1000)
+        }
+        if currentTime > 0 {
+            body["position_ms"] = Int64(currentTime * 1000)
+        }
+        if let art = currentTrack?.artworkUrl {
+            body["artwork_url"] = art
+        }
+        var req = AppSettings.shared.request(base.appendingPathComponent("api/rpc/state"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: req).resume()
     }
 
     private func itemFinished() {
@@ -170,6 +200,7 @@ final class PlayerEngine: ObservableObject {
         } else {
             player.pause()
             isPlaying = false
+            pushDiscordRPC()
         }
     }
 
@@ -185,6 +216,7 @@ final class PlayerEngine: ObservableObject {
         } else {
             player.pause()
             isPlaying = false
+            pushDiscordRPC()
         }
     }
 
@@ -204,6 +236,7 @@ final class PlayerEngine: ObservableObject {
         } else if index == currentIndex {
             player.pause()
             isPlaying = false
+            pushDiscordRPC()
         }
     }
 

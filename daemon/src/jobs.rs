@@ -1,4 +1,5 @@
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_DISCORD_CLIENT_ID};
+use crate::discord_rpc::DiscordRpc;
 use larp_core::api::Track;
 use larp_core::db::{Database, Playlist};
 use serde::Serialize;
@@ -73,15 +74,24 @@ pub struct AppState {
     pub db: Mutex<Database>,
     /// Кэш «Мне нравится» из API Яндекс Музыки.
     pub yandex_likes_cache: tokio::sync::Mutex<CachedLikes>,
+    /// Discord Rich Presence: активность ставит телефон (или TUI-плеер). None — отключено.
+    pub discord: Option<DiscordRpc>,
 }
 
 impl AppState {
     pub fn new(conf: Config, db: Database) -> Arc<Self> {
+        let discord_id = if conf.discord_client_id.is_empty() {
+            DEFAULT_DISCORD_CLIENT_ID
+        } else {
+            &conf.discord_client_id
+        };
+        let discord = DiscordRpc::new(discord_id);
         Arc::new(AppState {
             jobs: RwLock::new(HashMap::new()),
             conf,
             db: Mutex::new(db),
             yandex_likes_cache: tokio::sync::Mutex::new(CachedLikes::default()),
+            discord,
         })
     }
 

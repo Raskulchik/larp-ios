@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct LibraryView: View {
     @ObservedObject private var library = LibraryStore.shared
     @ObservedObject private var player = PlayerEngine.shared
+    @ObservedObject private var settings = AppSettings.shared
     @State private var isImporting = false
 
     var body: some View {
@@ -42,7 +43,7 @@ struct LibraryView: View {
             library.addLocalFile(from: url, fileName: url.lastPathComponent)
         }
         .onAppear {
-            library.reloadLiked(autoDownload: true)
+            library.reloadLiked(autoDownload: settings.autoDownloadLibrary)
             library.loadLocalFiles()
         }
     }

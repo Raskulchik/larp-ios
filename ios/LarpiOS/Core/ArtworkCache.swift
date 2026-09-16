@@ -32,6 +32,15 @@ enum ArtworkCache {
         return (try? data.write(to: fileURL(for: artworkUrl), options: .atomic)) != nil
     }
 
+    /// Удалить все закэшированные обложки («Очистить кэш обложек» в Настройках).
+    static func clear() {
+        let fm = FileManager.default
+        let items = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        for name in items {
+            try? fm.removeItem(at: dir.appendingPathComponent(name))
+        }
+    }
+
     /// Скачать и закэшировать обложку (best-effort).
     @MainActor
     static func prefetch(_ artworkUrl: String?) async {

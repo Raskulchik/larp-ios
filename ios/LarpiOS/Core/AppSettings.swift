@@ -6,6 +6,8 @@ final class AppSettings: ObservableObject {
 
     private static let hostKey = "daemonHost"
     private static let portKey = "daemonPort"
+    private static let discordRPCKey = "discordRPCEnabled"
+    private static let autoDownloadKey = "autoDownloadLibrary"
 
     @Published var daemonHost: String {
         didSet { UserDefaults.standard.set(daemonHost, forKey: Self.hostKey) }
@@ -13,11 +15,24 @@ final class AppSettings: ObservableObject {
     @Published var daemonPort: String {
         didSet { UserDefaults.standard.set(daemonPort, forKey: Self.portKey) }
     }
+    /// Показывать «Слушаю …» в Discord через демон (флажок в Настройках).
+    @Published var discordRPCEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(discordRPCEnabled, forKey: Self.discordRPCKey)
+            PlayerEngine.shared.pushDiscordRPC()
+        }
+    }
+    /// Автоматически скачивать недостающие треки Библиотеки на телефон.
+    @Published var autoDownloadLibrary: Bool {
+        didSet { UserDefaults.standard.set(autoDownloadLibrary, forKey: Self.autoDownloadKey) }
+    }
 
     init() {
         let ud = UserDefaults.standard
         daemonHost = ud.string(forKey: Self.hostKey) ?? ""
         daemonPort = ud.string(forKey: Self.portKey) ?? "47110"
+        discordRPCEnabled = ud.object(forKey: Self.discordRPCKey) as? Bool ?? true
+        autoDownloadLibrary = ud.object(forKey: Self.autoDownloadKey) as? Bool ?? true
     }
 
     /// Демон ходит только по локальной сети (http, без туннеля).

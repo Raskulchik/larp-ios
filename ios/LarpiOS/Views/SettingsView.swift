@@ -21,6 +21,20 @@ struct SettingsView: View {
                     }
                 }
 
+                Section(footer: Text("Если включено, телефон передаёт проигрывание демону, а демон показывает «Слушаю …» в Discord (Rich Presence, процесс Discord должен быть запущен на компьютере).")) {
+                    Toggle("Discord RPC", isOn: $settings.discordRPCEnabled)
+                }
+
+                Section(footer: Text("При открытии вкладки «Библиотека» недостающие треки автоматически скачиваются на телефон (через демон, файлы из ~/.cache/music-player-tui/downloads при этом не дублируются).")) {
+                    Toggle("Автоскачивание Библиотеки", isOn: $settings.autoDownloadLibrary)
+                }
+
+                Section {
+                    Button("Очистить кэш обложек") { ArtworkCache.clear() }
+                } footer: {
+                    Text("Удаляет сохранённые на телефоне обложки (Documents/ArtworkCache). Сами mp3 не трогаются.")
+                }
+
                 Section(footer: Text("Yandex-токен живёт на компьютере в ~/.config/music-player-tui/config.json — телефону он не нужен. Лайки и плейлисты хранятся в общей с music-player-tui базе (~/.config/music-player-tui/liked.db).")) {
                     Text("Поиск, скачивание и библиотека идут через демон по локальной сети.")
                 }
