@@ -184,7 +184,6 @@ struct PlayerView: View {
                     }
                 }
                 .listStyle(.plain)
-                .scrollContentBackground(.hidden)
                 .frame(maxHeight: 240)
             }
         }
