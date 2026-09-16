@@ -33,6 +33,7 @@ enum ArtworkCache {
     }
 
     /// Скачать и закэшировать обложку (best-effort).
+    @MainActor
     static func prefetch(_ artworkUrl: String?) async {
         guard let artworkUrl, !artworkUrl.isEmpty,
               cachedImage(for: artworkUrl) == nil,
