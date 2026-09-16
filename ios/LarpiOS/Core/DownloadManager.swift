@@ -1,5 +1,15 @@
+import AVFoundation
 import Foundation
 import UIKit
+
+/// Реальная длительность mp3 через AVFoundation (не парсинг строк).
+private enum AudioFile {
+    static func durationMs(of url: URL) async -> Int64? {
+        let asset = AVURLAsset(url: url)
+        guard let secs = try? await asset.load(.duration).seconds, secs > 0 else { return nil }
+        return Int64((secs * 1000).rounded())
+    }
+}
 
 /// Управление скачиванием через домашний демон (larp-daemon).
 /// Файл качается на Arch-боксе (yt-dlp / yandex), потом передаётся на телефон в Documents/Downloads.
@@ -47,6 +57,12 @@ final class DownloadManager: ObservableObject {
     @Published private(set) var bulkActive = false
     private var bulkTask: Task<Void, Never>?
 
+    /// Реальная длительность из аудиофайлов локально скачанных треков (ms),
+    /// по ключу <md5 searchKey>. YT Music не всегда отдаёт длительность в поиске,
+    /// поэтому берём её из самого mp3.
+    @Published private(set) var durations: [String: Int64] = [:]
+    private static let durationsKey = "larp.localDurationsMs"
+
     // Фоновое продление: iOS даёт процессу время после сворачивания,
     // пока идёт скачивание (периодически перезапрашиваем).
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
@@ -67,6 +83,10 @@ final class DownloadManager: ObservableObject {
 
     private init() {
         try? FileManager.default.createDirectory(at: docsDir, withIntermediateDirectories: true)
+        if let data = UserDefaults.standard.data(forKey: Self.durationsKey),
+           let dict = try? JSONDecoder().decode([String: Int64].self, from: data) {
+            durations = dict
+        }
     }
 
     private func key(_ track: Track) -> String { track.searchKey.md5Hex }
@@ -86,6 +106,45 @@ final class DownloadManager: ObservableObject {
     func remoteStreamURL(for track: Track) -> URL? {
         guard let base = AppSettings.shared.daemonBaseURL else { return nil }
         return base.appendingPathComponent("files").appendingPathComponent("\(key(track)).mp3")
+    }
+
+    /// Длительность трека: из измеренного локального файла, иначе из метаданных трека.
+    func durationMs(for track: Track) -> Int64? {
+        durations[key(track)] ?? track.durationMs
+    }
+
+    /// Измерить длительность локального файла, если ещё не измеряли.
+    func measureDurationIfMissing(url: URL, track: Track) async -> Int64? {
+        let k = key(track)
+        if let d = durations[k] { return d }
+        if let ms = await AudioFile.durationMs(of: url), ms > 0 {
+            setDuration(ms, forKey: k)
+            return ms
+        }
+        return track.durationMs
+    }
+
+    /// Однократно измерить длительности всех уже скачанных mp3 (по имени файла = md5 ключ).
+    func measureLocalDurations() {
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: docsDir.path)) ?? []
+        for name in files where name.hasSuffix(".mp3") {
+            let base = String(name.dropLast(4))
+            guard durations[base] == nil else { continue }
+            let url = fileURL(name: name)
+            Task { [weak self] in
+                guard let self else { return }
+                if let ms = await AudioFile.durationMs(of: url), ms > 0 {
+                    self.setDuration(ms, forKey: base)
+                }
+            }
+        }
+    }
+
+    private func setDuration(_ ms: Int64, forKey k: String) {
+        durations[k] = ms
+        if let data = try? JSONEncoder().encode(durations) {
+            UserDefaults.standard.set(data, forKey: Self.durationsKey)
+        }
     }
 
     /// Уже скачивается/скачано?
@@ -193,6 +252,12 @@ final class DownloadManager: ObservableObject {
             tasks[k] = DownloadTaskInfo(state: "done", progress: 100, fileName: name, error: nil, isActive: false)
             onComplete(FileManager.default.fileExists(atPath: dest.path) ? dest : nil)
             Task { await ArtworkCache.prefetch(track.artworkUrl) }
+            Task { [weak self] in
+                guard let self else { return }
+                if let ms = await AudioFile.durationMs(of: dest), ms > 0 {
+                    self.setDuration(ms, forKey: k)
+                }
+            }
         } catch {
             complete(k, error: error.localizedDescription)
         }

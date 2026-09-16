@@ -65,7 +65,7 @@ struct TrackRowView: View {
                 }
             }
             Spacer()
-            if let d = track.durationMs, d > 0 {
+            if let d = downloads.durationMs(for: track), d > 0 {
                 Text(secondsText(Double(d) / 1000.0))
                     .font(.caption)
                     .foregroundColor(.secondary)

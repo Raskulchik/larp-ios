@@ -74,10 +74,19 @@ final class PlayerEngine: ObservableObject {
     private func loadCurrent() {
         guard let track = currentTrack else { return }
         currentTime = 0
-        duration = TimeInterval(track.durationMs ?? 0) / 1000.0
+        duration = TimeInterval(DownloadManager.shared.durationMs(for: track) ?? 0) / 1000.0
 
         if let local = DownloadManager.shared.localFileURL(for: track) {
             playItem(local, track: track)
+            if DownloadManager.shared.durationMs(for: track) == nil {
+                Task { [weak self] in
+                    guard let self,
+                          let ms = await DownloadManager.shared.measureDurationIfMissing(url: local, track: track),
+                          ms > 0 else { return }
+                    self.duration = TimeInterval(ms) / 1000.0
+                    self.updateNowPlaying(track)
+                }
+            }
             return
         }
 

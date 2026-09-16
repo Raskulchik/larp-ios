@@ -225,13 +225,18 @@ final class LibraryStore: ObservableObject {
     }
 
     func loadLocalFiles() {
-        let fm = FileManager.default
-        let url = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("LocalFiles.json")
-        guard let data = try? Data(contentsOf: url) else { return }
-        if let arr = try? JSONDecoder().decode([Track].self, from: data) {
-            localFiles = arr
-            localFileKeys = Set(arr.map(\.searchKey))
+        if let data = try? Data(contentsOf: Self.localFilesURL) {
+            if let arr = try? JSONDecoder().decode([Track].self, from: data) {
+                localFiles = arr
+                localFileKeys = Set(arr.map(\.searchKey))
+            }
         }
+        // Реальная длительность уже скачанных mp3 (YT Music её часто не отдаёт в поиске).
+        DownloadManager.shared.measureLocalDurations()
+    }
+
+    private static var localFilesURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalFiles.json")
     }
 }

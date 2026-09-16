@@ -3,6 +3,7 @@ import SwiftUI
 /// Полноэкранный плеер (sheet).
 struct PlayerView: View {
     @ObservedObject private var player = PlayerEngine.shared
+    @ObservedObject private var downloads = DownloadManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showQueue = false
 
@@ -165,7 +166,7 @@ struct PlayerView: View {
                                         .lineLimit(1)
                                 }
                                 Spacer()
-                                if let d = track.durationMs, d > 0 {
+                                if let d = downloads.durationMs(for: track), d > 0 {
                                     Text(secondsText(Double(d) / 1000))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
