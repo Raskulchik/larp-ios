@@ -131,11 +131,9 @@ final class PlayerEngine: ObservableObject {
             seek(to: 0)
             player.play()
             isPlaying = true
-        case .all:
+        case .all, .off:
+            // .off: идём по очереди, останавливаемся только после последнего трека.
             next()
-        case .off:
-            player.pause()
-            isPlaying = false
         }
     }
 
@@ -176,6 +174,25 @@ final class PlayerEngine: ObservableObject {
             currentIndex -= 1
             loadCurrent()
         } else {
+            player.pause()
+            isPlaying = false
+        }
+    }
+
+    /// Перейти на трек в очереди (из списка очереди).
+    func playAt(_ index: Int) {
+        guard queue.indices.contains(index) else { return }
+        currentIndex = index
+        loadCurrent()
+    }
+
+    /// Удалить трек из очереди (свайп в списке очереди).
+    func removeAt(_ index: Int) {
+        guard queue.indices.contains(index) else { return }
+        queue.remove(at: index)
+        if index < currentIndex {
+            currentIndex -= 1
+        } else if index == currentIndex {
             player.pause()
             isPlaying = false
         }

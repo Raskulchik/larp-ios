@@ -4,8 +4,7 @@ import SwiftUI
 struct PlayerView: View {
     @ObservedObject private var player = PlayerEngine.shared
     @Environment(\.dismiss) private var dismiss
-
-    private var isSeeking = false
+    @State private var showQueue = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -49,6 +48,8 @@ struct PlayerView: View {
             .padding(.horizontal, 24)
 
             controls
+
+            queueSection
 
             Spacer(minLength: 24)
         }
@@ -107,5 +108,100 @@ struct PlayerView: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 12)
+    }
+
+    private var queueSection: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { showQueue.toggle() }
+                } label: {
+                    Label("Очередь (\(player.queue.count))", systemImage: "list.bullet")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                if player.queue.count > 1 {
+                    Button {
+                        player.shuffle()
+                    } label: {
+                        Image(systemName: "shuffle")
+                            .foregroundColor(player.isShuffleOn ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        cycleRepeat()
+                    } label: {
+                        Image(systemName: repeatIcon)
+                            .foregroundColor(player.repeatMode != .off ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 24)
+
+            if showQueue {
+                List {
+                    ForEach(Array(player.queue.enumerated()), id: \.element.searchKey) { idx, track in
+                        Button {
+                            player.playAt(idx)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Text("\(idx + 1)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundColor(idx == player.currentIndex ? .accentColor : .secondary)
+                                    .frame(width: 26, alignment: .trailing)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(track.title)
+                                        .font(.subheadline)
+                                        .foregroundColor(idx == player.currentIndex ? .accentColor : .primary)
+                                        .lineLimit(1)
+                                    Text(track.artist)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                if let d = track.durationMs, d > 0 {
+                                    Text(secondsText(Double(d) / 1000))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                player.removeAt(idx)
+                            } label: {
+                                Label("Убрать", systemImage: "minus.circle")
+                            }
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .frame(maxHeight: 240)
+            }
+        }
+    }
+
+    private var repeatIcon: String {
+        switch player.repeatMode {
+        case .one: return "repeat.1"
+        case .all, .off: return "repeat"
+        }
+    }
+
+    private func cycleRepeat() {
+        switch player.repeatMode {
+        case .off: player.repeatMode = .all
+        case .all: player.repeatMode = .one
+        case .one: player.repeatMode = .off
+        }
     }
 }
