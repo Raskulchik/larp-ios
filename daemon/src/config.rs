@@ -33,6 +33,10 @@ pub struct Config {
     /// Discord Application ID для Rich Presence (тот же, что в music-player-tui).
     #[serde(default)]
     pub discord_client_id: String,
+    /// Через сколько секунд без статуса от телефона чистить Discord-активность
+    /// (телефон «пропал»/убит — фантомный RPC). 0 — проверка выключена.
+    #[serde(default)]
+    pub discord_phantom_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -54,6 +58,7 @@ impl Default for Config {
             ytdlp_cookies: String::new(),
             ytdlp_cookies_browser: String::new(),
             discord_client_id: DEFAULT_DISCORD_CLIENT_ID.to_string(),
+            discord_phantom_timeout_secs: 60,
         }
     }
 }

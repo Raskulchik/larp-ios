@@ -4,6 +4,7 @@ use larp_core::api::Track;
 use larp_core::db::{Database, Playlist};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -76,6 +77,10 @@ pub struct AppState {
     pub yandex_likes_cache: tokio::sync::Mutex<CachedLikes>,
     /// Discord Rich Presence: активность ставит телефон (или TUI-плеер). None — отключено.
     pub discord: Option<DiscordRpc>,
+    /// Когда телефон последний раз прислал «playing=true» (фантомная проверка).
+    pub rpc_last_seen: Mutex<Option<Instant>>,
+    /// Сейчас ли показана активность в Discord.
+    pub rpc_active: AtomicBool,
 }
 
 impl AppState {
@@ -92,6 +97,8 @@ impl AppState {
             db: Mutex::new(db),
             yandex_likes_cache: tokio::sync::Mutex::new(CachedLikes::default()),
             discord,
+            rpc_last_seen: Mutex::new(None),
+            rpc_active: AtomicBool::new(false),
         })
     }
 

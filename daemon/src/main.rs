@@ -15,8 +15,9 @@ use axum::{
 };
 use jobs::{AppState, Job, job_id};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 struct DownloadReq {
@@ -79,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
                 .delete(dbapi::remove_playlist_track),
         )
         .layer(middleware::from_fn(logging))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = format!("{}:{}", conf.listen, conf.port);
     println!("larp-daemon v0.1.0 listening on http://{addr}");
@@ -95,6 +96,14 @@ async fn main() -> anyhow::Result<()> {
         println!("yt-dlp cookies: from file {}", conf.ytdlp_cookies);
     } else {
         println!("yt-dlp cookies: NOT configured (YouTube Music / SoundCloud may need cookies from Firefox)");
+    }
+    let phantom = Duration::from_secs(conf.discord_phantom_timeout_secs);
+    if conf.discord_phantom_timeout_secs > 0 {
+        println!("[discord] phantom rpc check: clear activity after {}s of silence", phantom.as_secs());
+        let state2 = state.clone();
+        tokio::spawn(async move { monitor_phantom_rpc(state2, phantom).await });
+    } else {
+        println!("[discord] phantom rpc check: disabled");
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -138,6 +147,8 @@ async fn rpc_state(State(state): State<Arc<AppState>>, Json(req): Json<RpcStateR
 
     if !req.enabled || !req.playing {
         rpc.clear();
+        state.rpc_active.store(false, Ordering::SeqCst);
+        *state.rpc_last_seen.lock().unwrap() = None;
     } else {
         rpc.set_activity(
             &req.title,
@@ -148,8 +159,31 @@ async fn rpc_state(State(state): State<Arc<AppState>>, Json(req): Json<RpcStateR
             req.position_ms,
             true,
         );
+        state.rpc_active.store(true, Ordering::SeqCst);
+        *state.rpc_last_seen.lock().unwrap() = Some(Instant::now());
     }
     Json(serde_json::json!({"ok": true})).into_response()
+}
+
+/// Периодически чистит «фантомную» активность: телефон замолчал на дольше таймаута
+/// (приложение убито, Wi-Fi пропал) — значит, реально уже ничего не играет.
+async fn monitor_phantom_rpc(state: Arc<AppState>, timeout: Duration) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let expired = state.rpc_active.load(Ordering::SeqCst)
+            && state.rpc_last_seen.lock().unwrap().map_or(false, |t| t.elapsed() > timeout);
+        if expired {
+            state.rpc_active.store(false, Ordering::SeqCst);
+            *state.rpc_last_seen.lock().unwrap() = None;
+            if let Some(rpc) = state.discord.as_ref() {
+                rpc.clear();
+                eprintln!(
+                    "[discord] phantom rpc cleared (no phone update for >{}s)",
+                    timeout.as_secs()
+                );
+            }
+        }
+    }
 }
 
 async fn logging(req: axum::extract::Request, next: Next) -> Response {

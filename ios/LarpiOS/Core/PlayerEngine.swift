@@ -117,13 +117,17 @@ final class PlayerEngine: ObservableObject {
         updateNowPlaying(track)
         loadArtwork(track)
         pushDiscordRPC()
+        ensureRPCHeartbeat()
     }
 
     func togglePlayPause() {
         if isPlaying {
             player.pause()
+            rpcHeartbeat?.cancel()
+            rpcHeartbeat = nil
         } else {
             player.play()
+            ensureRPCHeartbeat()
         }
         isPlaying = !isPlaying
         updateNowPlayingInfo()
@@ -138,6 +142,23 @@ final class PlayerEngine: ObservableObject {
     }
 
     // ============ Discord Rich Presence ============
+
+    /// Пока играет — фоном шлёт демону «я жив» каждые 15 с, чтобы демон
+    /// не посчитал активность фантомной (просто трек длинный и тихий).
+    private var rpcHeartbeat: Task<Void, Never>?
+
+    private func ensureRPCHeartbeat() {
+        if rpcHeartbeat != nil { return }
+        guard AppSettings.shared.discordRPCEnabled else { return }
+        rpcHeartbeat = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self, self.isPlaying else { break }
+                self.pushDiscordRPC()
+            }
+            self?.rpcHeartbeat = nil
+        }
+    }
 
     /// Отправить состояние проигрывания демону → Discord (если включено в Настройках).
     func pushDiscordRPC() {
@@ -200,6 +221,8 @@ final class PlayerEngine: ObservableObject {
         } else {
             player.pause()
             isPlaying = false
+            rpcHeartbeat?.cancel()
+            rpcHeartbeat = nil
             pushDiscordRPC()
         }
     }
@@ -216,6 +239,8 @@ final class PlayerEngine: ObservableObject {
         } else {
             player.pause()
             isPlaying = false
+            rpcHeartbeat?.cancel()
+            rpcHeartbeat = nil
             pushDiscordRPC()
         }
     }
@@ -273,6 +298,8 @@ final class PlayerEngine: ObservableObject {
                 self?.player.play()
                 self?.isPlaying = true
                 self?.updateNowPlayingInfo()
+                self?.ensureRPCHeartbeat()
+                self?.pushDiscordRPC()
             }
             return .success
         }
@@ -281,6 +308,9 @@ final class PlayerEngine: ObservableObject {
                 self?.player.pause()
                 self?.isPlaying = false
                 self?.updateNowPlayingInfo()
+                self?.rpcHeartbeat?.cancel()
+                self?.rpcHeartbeat = nil
+                self?.pushDiscordRPC()
             }
             return .success
         }
