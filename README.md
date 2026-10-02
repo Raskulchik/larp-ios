@@ -118,3 +118,5 @@ open ios/LarpiOS.xcodeproj
 cargo test                # 8 тестов: db/ffi core + range/имя-файла daemon
 cd daemon && cargo run    # поднять демон локально, curl'ами гонять
 ```
+
+я кстати заставил нейронку написать описание 
