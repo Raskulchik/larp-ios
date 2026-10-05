@@ -22,6 +22,11 @@ struct LibraryView: View {
             }
         }
         .navigationTitle("Библиотека")
+        .safeAreaInset(edge: .bottom) {
+            if library.pendingSyncCount > 0 {
+                pendingBanner
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -46,6 +51,30 @@ struct LibraryView: View {
             library.reloadLiked(autoDownload: settings.autoDownloadLibrary)
             library.loadLocalFiles()
         }
+    }
+
+    /// Плашка: изменения, сделанные оффлайн, ждут отправки на компьютер.
+    private var pendingBanner: some View {
+        Button {
+            Task { await library.syncLiked() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                Text("Изменения ждут синка с компьютером: \(library.pendingSyncCount)")
+                    .font(.footnote)
+                Spacer()
+                Text("Повторить")
+                    .font(.footnote.weight(.semibold))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.orange.opacity(0.18))
+            .foregroundColor(.primary)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 4)
+        }
+        .buttonStyle(.plain)
     }
 
     private var emptyView: ContentUnavailableViewCompat {

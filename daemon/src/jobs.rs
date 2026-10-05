@@ -1,7 +1,7 @@
 use crate::config::{Config, DEFAULT_DISCORD_CLIENT_ID};
 use crate::discord_rpc::DiscordRpc;
 use larp_core::api::Track;
-use larp_core::db::{Database, Playlist};
+use larp_core::db::{Database, LikeOp, Playlist};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -139,6 +139,14 @@ impl AppState {
             }
             _ => Ok(tracks),
         }
+    }
+
+    /// Сверка телефона с компом: применяем его оффлайн-очередь лайков по порядку
+    /// и отдаём актуальный список (одним ответом, без гонки между запросами).
+    pub fn apply_like_ops(&self, ops: &[LikeOp]) -> anyhow::Result<Vec<Track>> {
+        let db = self.db.lock().unwrap();
+        db.apply_like_ops(ops)?;
+        Ok(db.get_liked()?)
     }
 
     pub fn playlists(&self) -> anyhow::Result<Vec<Playlist>> {

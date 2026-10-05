@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @ObservedObject private var player = PlayerEngine.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -23,6 +24,11 @@ struct RootView: View {
                 PlayerBarView()
                     .padding(.bottom, 46)
             }
+        }
+        .onChange(of: scenePhase) { phase in
+            // Вернулись в приложение — доливаем накопленное оффлайн и сверяемся с компом.
+            guard phase == .active else { return }
+            Task { await LibraryStore.shared.syncLiked() }
         }
     }
 }

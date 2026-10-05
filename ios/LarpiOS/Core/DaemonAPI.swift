@@ -72,14 +72,28 @@ enum DaemonAPI {
         return try decodeArray(obj["likes"])
     }
 
-    static func like(_ track: Track) async throws {
-        let body = try JSONEncoder().encode(track)
-        _ = try await request("api/like", method: "POST", body: body)
+    /// Операция оффлайн-очереди: лайк/анлайк, сделанные на телефоне без сети.
+    enum LikeOpPayload {
+        case like(Track)
+        case unlike(source: String, trackId: String)
+
+        var json: [String: Any] {
+            switch self {
+            case .like(let track):
+                let obj = (try? JSONEncoder().encode(track))
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+                return ["kind": "like", "track": obj]
+            case .unlike(let source, let trackId):
+                return ["kind": "unlike", "source": source, "trackId": trackId]
+            }
+        }
     }
 
-    static func unlike(source: String, trackId: String) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["source": source, "track_id": trackId])
-        _ = try await request("api/unlike", method: "POST", body: body)
+    /// Отдать накопленные оффлайн-операции и получить итоговый список лайков с демона.
+    static func syncLiked(_ ops: [LikeOpPayload]) async throws -> [Track] {
+        let body = try JSONSerialization.data(withJSONObject: ["ops": ops.map { $0.json }])
+        let obj = try await request("api/liked/sync", method: "POST", body: body)
+        return try decodeArray(obj["liked"])
     }
 
     // ============ playlists ============

@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/liked", get(dbapi::get_liked))
         .route("/api/like", post(dbapi::like_track))
         .route("/api/unlike", post(dbapi::unlike_track))
+        .route("/api/liked/sync", post(dbapi::sync_liked))
         .route("/api/yandex-likes", get(dbapi::yandex_likes))
         .route("/api/rpc/state", post(rpc_state))
         .route(

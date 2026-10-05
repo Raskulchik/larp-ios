@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use larp_core::api::Track;
+use larp_core::db::LikeOp;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -83,6 +84,25 @@ pub async fn unlike_track(
     match state.unlike(&req.source, &req.track_id) {
         Ok(()) => ok_unit(),
         Err(e) => bad(format!("{e:#}")),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SyncLikedReq {
+    /// Оффлайн-очередь телефона: применяется строго по порядку.
+    #[serde(default)]
+    pub ops: Vec<LikeOp>,
+}
+
+/// Сверка с компом: телефон присылает накопившиеся оффлайн-лайки/анлайки,
+/// демон применяет их к общей базе и отдаёт итоговый список одним ответом.
+pub async fn sync_liked(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SyncLikedReq>,
+) -> Response {
+    match state.apply_like_ops(&req.ops) {
+        Ok(tracks) => Json(serde_json::json!({"ok": true, "liked": tracks})).into_response(),
+        Err(e) => err(e),
     }
 }
 

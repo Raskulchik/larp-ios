@@ -9,6 +9,19 @@ pub struct Playlist {
     pub count: usize,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LikeOp {
+    Like {
+        track: Track,
+    },
+    Unlike {
+        source: String,
+        #[serde(rename = "trackId")]
+        track_id: String,
+    },
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -96,6 +109,21 @@ impl Database {
             "DELETE FROM liked WHERE source = ?1 AND track_id = ?2",
             params![source_str(source), track_id],
         )?;
+        Ok(())
+    }
+
+    /// Применить пакет операций с телефона (его оффлайн-очередь) строго по порядку.
+    /// Порядок важен: например «лайк → анлайк» одного трека должен дать отсутствие.
+    pub fn apply_like_ops(&self, ops: &[LikeOp]) -> anyhow::Result<()> {
+        for op in ops {
+            match op {
+                LikeOp::Like { track } => self.like_track(track)?,
+                LikeOp::Unlike { source, track_id } => {
+                    let src = source_from_str(source);
+                    self.unlike_track(&src, track_id)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -278,6 +306,52 @@ mod tests {
 
         db.delete_playlist(pl_id).expect("delete");
         assert!(!db.get_playlists().expect("list").iter().any(|p| p.id == pl_id));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn t(id: &str) -> Track {
+        Track {
+            id: id.to_string(),
+            title: format!("Song {id}"),
+            artist: "Artist".to_string(),
+            source: Source::YouTubeMusic,
+            preview_url: None,
+            artwork_url: None,
+            duration_ms: Some(120_000),
+            album: None,
+            year: None,
+        }
+    }
+
+    #[test]
+    fn apply_like_ops_keeps_order() {
+        let path = temp_db_path("t_sync");
+        let _ = std::fs::remove_file(&path);
+        let db = Database::open_at(&path).expect("open db");
+
+        db.like_track(&t("a")).expect("seed a");
+
+        // Оффлайн-очередь телефона: анлайк a, лайк b, и снова лайк a.
+        let ops = vec![
+            LikeOp::Unlike { source: "ytmusic".into(), track_id: "a".into() },
+            LikeOp::Like { track: t("b") },
+            LikeOp::Like { track: t("a") },
+        ];
+        db.apply_like_ops(&ops).expect("apply");
+
+        let liked = db.get_liked().expect("liked");
+        assert_eq!(liked.len(), 2, "a вернулся лайком, b добавился");
+        assert!(liked.iter().any(|x| x.id == "a"));
+        assert!(liked.iter().any(|x| x.id == "b"));
+
+        // Повторная отправка тех же операций (ретрай после обрыва связи) не должна дублировать.
+        db.apply_like_ops(&ops).expect("apply again");
+        assert_eq!(db.get_liked().expect("liked").len(), 2, "идемпотентно");
+
+        // Форма JSON совпадает с тем, что шлёт телефон.
+        let json = serde_json::to_string(&ops[0]).unwrap();
+        assert_eq!(json, r#"{"kind":"unlike","source":"ytmusic","trackId":"a"}"#);
 
         let _ = std::fs::remove_file(&path);
     }
