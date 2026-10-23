@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state.clone());
 
     let addr = format!("{}:{}", conf.listen, conf.port);
-    println!("larp-daemon v0.1.0 listening on http://{addr}");
+    println!("larp-daemon v{} listening on http://{addr}", env!("CARGO_PKG_VERSION"));
     println!("download dir: {}", conf.files_dir().display());
     if !conf.yandex_token.is_empty() {
         println!("yandex token: configured");
@@ -205,7 +205,7 @@ async fn logging(req: axum::extract::Request, next: Next) -> Response {
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     Json(Health {
         ok: true,
-        version: "larp-daemon-0.1.0",
+        version: concat!("larp-daemon-", env!("CARGO_PKG_VERSION")),
         port: state.conf.port,
     })
 }

@@ -29,12 +29,6 @@ struct SettingsView: View {
                     Toggle("Автоскачивание Библиотеки", isOn: $settings.autoDownloadLibrary)
                 }
 
-                Section {
-                    Button("Очистить кэш обложек") { ArtworkCache.clear() }
-                } footer: {
-                    Text("Удаляет сохранённые на телефоне обложки (Documents/ArtworkCache). Сами mp3 не трогаются.")
-                }
-
                 Section(footer: Text("Yandex-токен живёт на компьютере в ~/.config/music-player-tui/config.json — телефону он не нужен. Лайки и плейлисты хранятся в общей с music-player-tui базе (~/.config/music-player-tui/liked.db).")) {
                     Text("Поиск, скачивание и библиотека идут через демон по локальной сети.")
                 }

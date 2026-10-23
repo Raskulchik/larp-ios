@@ -30,5 +30,9 @@ struct RootView: View {
             guard phase == .active else { return }
             Task { await LibraryStore.shared.syncLiked() }
         }
+        .onAppear {
+            // Обложки теперь в самих mp3 — старая дисковая папка не нужна.
+            ArtworkStore.removeLegacyDiskCache()
+        }
     }
 }

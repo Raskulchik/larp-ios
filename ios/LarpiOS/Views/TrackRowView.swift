@@ -2,11 +2,22 @@ import SwiftUI
 import UIKit
 
 struct TrackArtworkView: View {
-    let url: String?
+    /// nil — просто плейсхолдер (например, в плеере ещё нет трека).
+    let track: Track?
     @State private var image: UIImage?
+    @ObservedObject private var downloads = DownloadManager.shared
 
     var body: some View {
-        Group {
+        let local: Bool
+        if let track {
+            local = downloads.localFileURL(for: track) != nil
+        } else {
+            local = false
+        }
+        // Меняется и при смене трека, и когда трек скачался (обложка появляется в mp3).
+        let refreshKey = "\(track?.searchKey ?? "none")-\(local)"
+
+        return Group {
             if let image {
                 Image(uiImage: image)
                     .resizable()
@@ -17,22 +28,13 @@ struct TrackArtworkView: View {
         }
         .frame(width: 46, height: 46)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task(id: url) { await load() }
+        .task(id: refreshKey) { await load() }
     }
 
     private func load() async {
         image = nil
-        if let cached = ArtworkCache.cachedImage(for: url) {
-            image = cached
-            return
-        }
-        guard let proxied = AppSettings.shared.thumbURL(for: url) else { return }
-        let req = AppSettings.shared.request(proxied)
-        if let (data, _) = try? await URLSession.shared.data(for: req),
-           let img = UIImage(data: data) {
-            ArtworkCache.cache(img, for: url)
-            image = img
-        }
+        // У скачанных треков обложка вшита в mp3, у остальных — из памяти/сети.
+        image = await ArtworkStore.image(for: track)
     }
 
     private var placeholder: some View {
@@ -50,7 +52,7 @@ struct TrackRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            TrackArtworkView(url: track.artworkUrl)
+            TrackArtworkView(track: track)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
                     .font(.headline)

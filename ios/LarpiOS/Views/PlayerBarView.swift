@@ -70,7 +70,7 @@ struct PlayerBarView: View {
 
     private var frame: some View {
         HStack(spacing: 10) {
-            TrackArtworkView(url: player.currentTrack?.artworkUrl)
+            TrackArtworkView(track: player.currentTrack)
                 .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 1) {
                 Text(player.currentTrack?.title ?? "")

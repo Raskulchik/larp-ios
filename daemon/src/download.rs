@@ -169,6 +169,7 @@ async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, kind: YtdKind
     let mut cmd = Command::new(&conf.ytdlp);
     cmd.args(["--newline", "--no-playlist", "-x"])
         .args(["--audio-format", "mp3", "--audio-quality", "128K"])
+        .args(["--convert-thumbnails", "jpg", "--embed-thumbnail"])
         .args(["-f", "bestaudio/best"])
         .args(["--force-overwrites", "--no-part"])
         .arg("-o")
