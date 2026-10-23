@@ -1,6 +1,6 @@
 [package]
 name = "larp-daemon"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 
 [[bin]]
@@ -27,3 +27,4 @@ hex = "0.4"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
 discord-rich-presence = "1.1"
+id3 = "1"

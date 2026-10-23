@@ -4,6 +4,7 @@ mod discord_rpc;
 mod download;
 mod jobs;
 mod lyrics;
+mod meta;
 
 use axum::{
     Json, Router,
@@ -63,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs/:id", get(get_job))
         .route("/files/:name", get(serve_file))
         .route("/api/thumb", get(thumb))
+        .route("/api/artwork", get(artwork))
         .route("/api/liked", get(dbapi::get_liked))
         .route("/api/like", post(dbapi::like_track))
         .route("/api/unlike", post(dbapi::unlike_track))
@@ -317,39 +319,72 @@ struct ThumbReq {
 
 /// Прокси превьюшек (обложек): телефон часто не достаёт ни sndcdn, ни googleusercontent.
 async fn thumb(Query(q): Query<ThumbReq>) -> Response {
-    if !q.url.starts_with("http://") && !q.url.starts_with("https://") {
-        return (StatusCode::BAD_REQUEST, "bad url").into_response();
+    match meta::fetch_image(&q.url).await {
+        Some((content_type, bytes)) => (
+            [(header::CONTENT_TYPE, content_type)],
+            axum::body::Body::from(bytes),
+        )
+            .into_response(),
+        None => StatusCode::BAD_GATEWAY.into_response(),
     }
-    let resp = match reqwest::get(&q.url).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("thumb: fetch failed: {e}");
-            return StatusCode::BAD_GATEWAY.into_response();
-        }
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        return (status, "upstream error").into_response();
+}
+
+#[derive(Deserialize)]
+struct ArtworkReq {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    fallback: String,
+}
+
+/// Уже крупная обложка? Тогда не дёргаем ytmeta.py ради каждой строки списка
+/// (запуск Python + ytmusicapi не бесплатный). Логика та же, что в larp-music-player.
+fn artwork_is_big(source: &str, url: &str) -> bool {
+    match source {
+        "ytmusic" => url.contains("w1080") || url.contains("hq720") || !url.contains('w'),
+        "itunes" => url.contains("600x600bb"),
+        "soundcloud" => url.contains("t500x500"),
+        "yandex" => url.contains("1000x1000"),
+        _ => false,
     }
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("image/jpeg")
-        .to_string();
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("thumb: body read failed: {e}");
-            return StatusCode::BAD_GATEWAY.into_response();
+}
+
+/// Обложка трека, скачанная через ytmeta.py (крупная), с запасным вариантом —
+/// обычным artwork_url из выдачи. Отдаёт сразу картинку.
+async fn artwork(State(state): State<Arc<AppState>>, Query(q): Query<ArtworkReq>) -> Response {
+    let has_fallback = !q.fallback.is_empty();
+    let fallback_is_big = has_fallback && artwork_is_big(&q.source, &q.fallback);
+
+    // Если в выдаче уже крупная обложка — сначала быстрый путь, иначе сначала ytmeta.
+    let mut urls: Vec<String> = Vec::new();
+    if fallback_is_big {
+        urls.push(q.fallback.clone());
+    }
+    if !q.source.is_empty() && !q.id.is_empty() {
+        if let Some(meta) = meta::get_meta(&q.source, &q.id, &state.conf).await {
+            if let Some(url) = meta.artwork_url {
+                if !urls.contains(&url) {
+                    urls.push(url);
+                }
+            }
         }
-    };
-    (
-        status,
-        [(header::CONTENT_TYPE, content_type)],
-        axum::body::Body::from(bytes.to_vec()),
-    )
-        .into_response()
+    }
+    if has_fallback && !fallback_is_big {
+        urls.push(q.fallback);
+    }
+
+    for url in urls {
+        if let Some((content_type, bytes)) = meta::fetch_image(&url).await {
+            return (
+                [(header::CONTENT_TYPE, content_type)],
+                axum::body::Body::from(bytes),
+            )
+                .into_response();
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn serve_file(State(state): State<Arc<AppState>>, Path(name): Path<String>, headers: HeaderMap) -> Response {

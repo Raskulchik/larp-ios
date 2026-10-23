@@ -53,11 +53,21 @@ final class AppSettings: ObservableObject {
         URLRequest(url: url)
     }
 
-    /// URL прокси обложки через демон (телефон сам не достаёт ни sndcdn, ни googleusercontent).
-    func thumbURL(for artworkUrl: String?) -> URL? {
-        guard let artworkUrl, !artworkUrl.isEmpty, let base = daemonBaseURL else { return nil }
-        var comps = URLComponents(url: base.appendingPathComponent("api/thumb"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "url", value: artworkUrl)]
+    /// Обложка через ytmeta.py на демоне (крупная), с fallback на обычный artwork_url.
+    func artworkURL(source: String, id: String, fallback: String?) -> URL? {
+        guard let base = daemonBaseURL else { return nil }
+        var comps = URLComponents(
+            url: base.appendingPathComponent("api/artwork"),
+            resolvingAgainstBaseURL: false
+        )!
+        var items = [
+            URLQueryItem(name: "source", value: source),
+            URLQueryItem(name: "id", value: id),
+        ]
+        if let fallback, !fallback.isEmpty {
+            items.append(URLQueryItem(name: "fallback", value: fallback))
+        }
+        comps.queryItems = items
         return comps.url
     }
 }

@@ -250,7 +250,7 @@ final class DownloadManager: ObservableObject {
             let dest = fileURL(name: name)
             try FileManager.default.moveItem(at: tmp, to: dest)
             // Обложка вшивается прямо в mp3 (ID3 APIC) — никакой отдельной папки.
-            await ArtworkStore.attachArtwork(from: track.artworkUrl, to: dest)
+            await ArtworkStore.attachArtwork(for: track, to: dest)
             tasks[k] = DownloadTaskInfo(state: "done", progress: 100, fileName: name, error: nil, isActive: false)
             onComplete(FileManager.default.fileExists(atPath: dest.path) ? dest : nil)
             Task { [weak self] in

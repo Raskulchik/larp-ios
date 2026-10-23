@@ -419,7 +419,7 @@ fn sc_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
     rb
 }
 
-async fn get_sc_client_id() -> anyhow::Result<String> {
+pub async fn get_sc_client_id() -> anyhow::Result<String> {
     if let Some(id) = SC_CLIENT_ID.lock().unwrap().as_ref() {
         return Ok(id.clone());
     }

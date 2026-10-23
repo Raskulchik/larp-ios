@@ -90,6 +90,25 @@ async fn run_download(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow::Re
     }
 }
 
+/// Обложку берём через ytmeta.py (крупную) и вшиваем в ID3 — она живёт в самом треке.
+/// Если ytmeta недоступен, у yt-dlp-файлов остаётся обложка от `--embed-thumbnail`.
+async fn attach_cover(state: &AppState, job: &Job, path: &std::path::Path) {
+    let Some(meta) = crate::meta::get_meta(&job.source, &job.track_id, &state.conf).await else {
+        return;
+    };
+    let Some(url) = meta.artwork_url else { return };
+    let Some((_, bytes)) = crate::meta::fetch_image(&url).await else {
+        return;
+    };
+    let path = path.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Err(e) = crate::meta::embed_cover(&path, &bytes) {
+            eprintln!("cover: embed failed: {e}");
+        }
+    })
+    .await;
+}
+
 async fn download_yandex(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow::Result<()> {
     let conf = &state.conf;
     let url = larp_core::api::get_yandex_download_url(&job.track_id, &conf.yandex_token).await?;
@@ -133,6 +152,8 @@ async fn download_yandex(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow:
     drop(file);
 
     tokio::fs::rename(&tmp_path, &final_path).await?;
+
+    attach_cover(state, job, &final_path).await;
 
     let size = std::fs::metadata(&final_path)?.len();
     update(state, &job.id, |j| {
@@ -235,6 +256,8 @@ async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, kind: YtdKind
     }
 
     tokio::fs::rename(&produced, &final_path).await?;
+
+    attach_cover(state, job, &final_path).await;
 
     let size = std::fs::metadata(&final_path)?.len();
     update(state, &job.id, |j| {

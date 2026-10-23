@@ -21,7 +21,7 @@ enum ArtworkStore {
                 return img
             }
             // Старые mp3 (скачаны до этой версии) — один раз вшиваем обложку и показываем.
-            if let data = await fetchData(track.artworkUrl) {
+            if let data = await fetchData(for: track) {
                 await embedInBackground(data, into: local)
                 let img = UIImage(data: data)
                 if let img { memory.setObject(img, forKey: key) }
@@ -30,19 +30,19 @@ enum ArtworkStore {
             return nil
         }
 
-        guard let url = track.artworkUrl, !url.isEmpty else { return nil }
-        if let cached = memory.object(forKey: url as NSString) { return cached }
-        guard let data = await fetchData(url), let img = UIImage(data: data) else { return nil }
-        memory.setObject(img, forKey: url as NSString)
+        let key = track.searchKey as NSString
+        if let cached = memory.object(forKey: key) { return cached }
+        guard let data = await fetchData(for: track), let img = UIImage(data: data) else { return nil }
+        memory.setObject(img, forKey: key)
         return img
     }
 
     /// Вшить обложку в скачанный файл (вызывается после загрузки трека).
     @MainActor
-    static func attachArtwork(from artworkUrl: String?, to fileURL: URL) async {
+    static func attachArtwork(for track: Track, to fileURL: URL) async {
         // Демон уже мог вшить обложку сам — тогда не тратим запрос.
         if await embeddedArtworkData(from: fileURL) != nil { return }
-        guard let data = await fetchData(artworkUrl) else { return }
+        guard let data = await fetchData(for: track) else { return }
         await embedInBackground(data, into: fileURL)
     }
 
@@ -57,15 +57,20 @@ enum ArtworkStore {
         UserDefaults.standard.set(true, forKey: key)
     }
 
-    // MARK: - Сеть (через прокси демона)
+    // MARK: - Сеть (обложку достаёт демон через ytmeta.py)
 
     @MainActor
-    private static func fetchData(_ artworkUrl: String?) async -> Data? {
-        guard let artworkUrl, !artworkUrl.isEmpty,
-              let proxied = AppSettings.shared.thumbURL(for: artworkUrl) else { return nil }
-        let req = AppSettings.shared.request(proxied)
-        guard let (data, _) = try? await URLSession.shared.data(for: req) else { return nil }
-        return data.isEmpty ? nil : data
+    private static func fetchData(for track: Track) async -> Data? {
+        guard let url = AppSettings.shared.artworkURL(
+            source: track.source,
+            id: track.id,
+            fallback: track.artworkUrl
+        ) else { return nil }
+        let req = AppSettings.shared.request(url)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              !data.isEmpty else { return nil }
+        return data
     }
 
     @MainActor
@@ -169,6 +174,11 @@ enum ArtworkStore {
     private nonisolated static func mimeType(for data: Data) -> String {
         if data.count >= 4, data[0] == 0x89, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 {
             return "image/png"
+        }
+        if data.count >= 12,
+           data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46, // RIFF
+           data[8] == 0x57, data[9] == 0x45, data[10] == 0x42, data[11] == 0x50 { // WEBP
+            return "image/webp"
         }
         return "image/jpeg"
     }
