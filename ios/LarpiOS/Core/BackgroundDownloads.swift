@@ -55,17 +55,24 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
         }
 
         do {
-            let downloads = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let fileManager = FileManager.default
+            let downloads = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("Downloads", isDirectory: true)
-            try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: downloads, withIntermediateDirectories: true)
             let destination = downloads.appendingPathComponent("\(metadata.key).mp3")
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
+            // URLSession's temporary download may live on a different volume.
+            // Copy to a staging file in Documents, then rename atomically.
+            let staging = downloads.appendingPathComponent(".\(metadata.key)-\(UUID().uuidString).download")
+            defer { try? fileManager.removeItem(at: staging) }
+            try fileManager.copyItem(at: location, to: staging)
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
             }
-            try FileManager.default.moveItem(at: location, to: destination)
+            try fileManager.moveItem(at: staging, to: destination)
             onFinished?(metadata, destination)
         } catch {
-            onFailure?(metadata, error.localizedDescription)
+            let nsError = error as NSError
+            onFailure?(metadata, "Не удалось сохранить \(metadata.track.title): \(nsError.localizedDescription) [\(nsError.domain):\(nsError.code)]")
         }
     }
 

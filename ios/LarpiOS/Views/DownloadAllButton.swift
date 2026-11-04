@@ -20,6 +20,9 @@ struct DownloadAllButton: View {
                 }
                 .accessibilityLabel("Отменить скачивание")
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .adaptiveGlass(cornerRadius: 18)
         } else {
             Button {
                 downloads.downloadAll(tracks)
@@ -27,6 +30,8 @@ struct DownloadAllButton: View {
                 Image(systemName: "arrow.down.circle")
             }
             .accessibilityLabel("Скачать все")
+            .padding(6)
+            .adaptiveGlass(cornerRadius: 18)
         }
     }
 }

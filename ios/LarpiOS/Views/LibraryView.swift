@@ -86,7 +86,7 @@ struct LibraryView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.orange.opacity(0.18))
+            .adaptiveGlass(cornerRadius: 12)
             .foregroundColor(.primary)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .padding(.horizontal, 12)

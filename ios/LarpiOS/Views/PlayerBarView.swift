@@ -48,8 +48,7 @@ struct PlayerBarView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .adaptiveGlass(cornerRadius: 16)
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
                     let fraction = player.duration > 0 ? player.currentTime / player.duration : 0

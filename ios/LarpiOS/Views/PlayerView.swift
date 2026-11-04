@@ -109,6 +109,8 @@ struct PlayerView: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 12)
+        .padding(.horizontal, 24)
+        .adaptiveGlass(cornerRadius: 40)
     }
 
     private var queueSection: some View {
