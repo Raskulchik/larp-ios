@@ -28,7 +28,9 @@ jobs:
 
   ios:
     name: iOS (Release .ipa)
-    runs-on: macos-15
+    # macos-15 is currently ARM64 and can be capacity constrained; Intel
+    # runners can still cross-compile the iOS device and simulator targets.
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
