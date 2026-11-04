@@ -6,6 +6,7 @@ struct LibraryView: View {
     @ObservedObject private var player = PlayerEngine.shared
     @ObservedObject private var settings = AppSettings.shared
     @State private var isImporting = false
+    @State private var fileImportError: String?
 
     var body: some View {
         NavigationView {
@@ -42,10 +43,27 @@ struct LibraryView: View {
             allowedContentTypes: [UTType.audio],
             allowsMultipleSelection: false
         ) { result in
-            guard case .success(let urls) = result, let url = urls.first else { return }
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            library.addLocalFile(from: url, fileName: url.lastPathComponent)
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task {
+                    do {
+                        try await library.addLocalFile(from: url, fileName: url.lastPathComponent)
+                    } catch {
+                        fileImportError = error.localizedDescription
+                    }
+                }
+            case .failure(let error):
+                fileImportError = error.localizedDescription
+            }
+        }
+        .alert("Не удалось добавить файл", isPresented: Binding(
+            get: { fileImportError != nil },
+            set: { if !$0 { fileImportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { fileImportError = nil }
+        } message: {
+            Text(fileImportError ?? "")
         }
         .onAppear {
             library.reloadLiked(autoDownload: settings.autoDownloadLibrary)

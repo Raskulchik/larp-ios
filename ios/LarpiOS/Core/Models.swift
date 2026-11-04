@@ -19,7 +19,7 @@ enum SourceKind: String, CaseIterable, Identifiable {
     }
 }
 
-struct Track: Codable, Identifiable, Equatable {
+struct Track: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let title: String
     let artist: String
@@ -27,6 +27,7 @@ struct Track: Codable, Identifiable, Equatable {
     let previewUrl: String?
     let artworkUrl: String?
     let durationMs: Int64?
+    var localFileExtension: String? = nil
 
     var sourceLabel: String {
         SourceKind(rawValue: source)?.label ?? source

@@ -6,6 +6,16 @@ struct PlaylistDetailView: View {
     @ObservedObject private var library = LibraryStore.shared
     @ObservedObject private var player = PlayerEngine.shared
     @State private var tracks: [Track] = []
+    @State private var searchText = ""
+
+    private var filteredTracks: [Track] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return tracks }
+        return tracks.filter { track in
+            track.title.localizedCaseInsensitiveContains(q) ||
+            track.artist.localizedCaseInsensitiveContains(q)
+        }
+    }
 
     var body: some View {
         Group {
@@ -17,9 +27,9 @@ struct PlaylistDetailView: View {
                 )
             } else {
                 List {
-                    ForEach(Array(tracks.enumerated()), id: \.element.searchKey) { idx, track in
+                    ForEach(Array(filteredTracks.enumerated()), id: \.element.searchKey) { idx, track in
                         Button {
-                            player.play(tracks, startAt: idx)
+                            player.play(filteredTracks, startAt: idx)
                         } label: {
                             TrackRowView(track: track,
                                          isPlaying: player.currentTrack?.searchKey == track.searchKey)
@@ -34,15 +44,20 @@ struct PlaylistDetailView: View {
                     }
                 }
                 .listStyle(.plain)
+                .searchable(text: $searchText, prompt: "Поиск в плейлисте")
+                .refreshable { tracks = await library.tracks(playlist) }
             }
         }
         .navigationTitle(playlist.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                DownloadAllButton(tracks: tracks)
+                DownloadAllButton(tracks: filteredTracks.isEmpty && searchText.isEmpty ? tracks : filteredTracks)
             }
         }
-        .task { tracks = await library.tracks(playlist) }
+        .task {
+            tracks = library.cachedTracks(playlist)
+            tracks = await library.tracks(playlist)
+        }
     }
 }

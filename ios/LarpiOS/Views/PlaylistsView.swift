@@ -4,6 +4,13 @@ struct PlaylistsView: View {
     @ObservedObject private var library = LibraryStore.shared
     @State private var showingCreate = false
     @State private var newName = ""
+    @State private var searchText = ""
+
+    private var filteredPlaylists: [PlaylistInfo] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return library.playlists }
+        return library.playlists.filter { $0.name.localizedCaseInsensitiveContains(q) }
+    }
 
     var body: some View {
         NavigationView {
@@ -30,7 +37,7 @@ struct PlaylistsView: View {
                         Text("Нет плейлистов — создай через «+» сверху")
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(library.playlists) { playlist in
+                        ForEach(filteredPlaylists) { playlist in
                             NavigationLink {
                                 PlaylistDetailView(playlist: playlist)
                             } label: {
@@ -57,6 +64,31 @@ struct PlaylistsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .searchable(text: $searchText, prompt: "Поиск по плейлистам")
+            .refreshable { await library.syncPlaylists() }
+            .safeAreaInset(edge: .bottom) {
+                if library.pendingPlaylistSyncCount > 0 {
+                    Button {
+                        Task { await library.syncPlaylists() }
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Изменения плейлистов ждут синхронизации: \(library.pendingPlaylistSyncCount)")
+                            Spacer()
+                            Text("Повторить").fontWeight(.semibold)
+                        }
+                        .font(.footnote)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.orange.opacity(0.18))
+                        .foregroundColor(.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
             .navigationTitle("Плейлисты")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

@@ -98,7 +98,8 @@ final class DownloadManager: ObservableObject {
     }
 
     func localFileURL(for track: Track) -> URL? {
-        let name = "\(key(track)).mp3"
+        let fileExtension = track.source == "local" ? (track.localFileExtension ?? "mp3") : "mp3"
+        let name = "\(key(track)).\(fileExtension)"
         let url = fileURL(name: name)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
@@ -124,13 +125,15 @@ final class DownloadManager: ObservableObject {
         return track.durationMs
     }
 
-    /// Однократно измерить длительности всех уже скачанных mp3 (по имени файла = md5 ключ).
+    /// Measure files in Downloads (filename stem is the md5 track key).
     func measureLocalDurations() {
         let files = (try? FileManager.default.contentsOfDirectory(atPath: docsDir.path)) ?? []
-        for name in files where name.hasSuffix(".mp3") {
-            let base = String(name.dropLast(4))
-            guard durations[base] == nil else { continue }
+        let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "caf"]
+        for name in files {
             let url = fileURL(name: name)
+            guard audioExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            let base = url.deletingPathExtension().lastPathComponent
+            guard durations[base] == nil else { continue }
             Task { [weak self] in
                 guard let self else { return }
                 if let ms = await AudioFile.durationMs(of: url), ms > 0 {

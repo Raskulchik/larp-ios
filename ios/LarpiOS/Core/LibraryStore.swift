@@ -12,6 +12,7 @@ final class LibraryStore: ObservableObject {
     @Published var yandexLikesLoading = false
     @Published var playlists: [PlaylistInfo] = []
     @Published var likedKeySet: Set<String> = []
+    @Published private(set) var pendingPlaylistSyncCount = 0
     /// Сколько изменений лайков ждут отправки на компьютер (мы были оффлайн).
     @Published var pendingSyncCount = 0
 
@@ -23,8 +24,22 @@ final class LibraryStore: ObservableObject {
     }
     private var pendingLikes: [PendingLike] = []
 
+    private struct PendingPlaylistOperation: Codable {
+        enum Kind: String, Codable { case create, delete, add, remove }
+        let kind: Kind
+        let playlistName: String
+        var track: Track? = nil
+        var source: String? = nil
+        var trackId: String? = nil
+    }
+    private var pendingPlaylistOperations: [PendingPlaylistOperation] = []
+    private var playlistSyncInProgress = false
+    private var playlistTrackCache: [String: [Track]] = [:]
+
     private init() {
         loadPendingLikes()
+        loadPlaylistCache()
+        loadPendingPlaylistOperations()
         reload()
     }
 
@@ -207,10 +222,112 @@ final class LibraryStore: ObservableObject {
     }
 
     func reloadPlaylists() {
+        if let cached = loadCachedPlaylists() {
+            playlists = cached
+        }
         Task {
-            if let pls = try? await DaemonAPI.playlists() {
-                self.playlists = pls
+            await syncPlaylists()
+        }
+    }
+
+    private struct PlaylistCache: Codable {
+        var playlists: [PlaylistInfo]
+        var tracks: [String: [Track]]
+    }
+
+    private func playlistCacheURL() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PlaylistsCache.json")
+    }
+
+    private func loadCachedPlaylists() -> [PlaylistInfo]? {
+        guard let data = try? Data(contentsOf: playlistCacheURL()),
+              let cache = try? JSONDecoder().decode(PlaylistCache.self, from: data) else { return nil }
+        playlistTrackCache = cache.tracks
+        return cache.playlists
+    }
+
+    private func loadPlaylistCache() {
+        _ = loadCachedPlaylists()
+    }
+
+    private func savePlaylistCache() {
+        let cache = PlaylistCache(playlists: playlists, tracks: playlistTrackCache)
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        try? data.write(to: playlistCacheURL(), options: .atomic)
+    }
+
+    private func pendingPlaylistOperationsURL() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PendingPlaylistOperations.json")
+    }
+
+    private func loadPendingPlaylistOperations() {
+        guard let data = try? Data(contentsOf: pendingPlaylistOperationsURL()),
+              let operations = try? JSONDecoder().decode([PendingPlaylistOperation].self, from: data) else { return }
+        pendingPlaylistOperations = operations
+        pendingPlaylistSyncCount = operations.count
+    }
+
+    private func savePendingPlaylistOperations() {
+        guard let data = try? JSONEncoder().encode(pendingPlaylistOperations) else { return }
+        try? data.write(to: pendingPlaylistOperationsURL(), options: .atomic)
+        pendingPlaylistSyncCount = pendingPlaylistOperations.count
+    }
+
+    /// Apply queued phone changes to the same database used by larp-music-player,
+    /// then refresh the local cache. Operations use playlist names so they also
+    /// work for playlists created on the phone while it was offline.
+    func syncPlaylists() async {
+        guard !playlistSyncInProgress else { return }
+        playlistSyncInProgress = true
+        defer { playlistSyncInProgress = false }
+
+        do {
+            while true {
+                var remote = try await DaemonAPI.playlists()
+                while let operation = pendingPlaylistOperations.first {
+                    let existing = remote.first { $0.name == operation.playlistName }
+                    switch operation.kind {
+                    case .create:
+                        if existing == nil {
+                            do {
+                                let id = try await DaemonAPI.createPlaylist(name: operation.playlistName)
+                                remote.append(PlaylistInfo(id: id, name: operation.playlistName, count: 0))
+                            } catch {
+                                // Another client may have created this same name
+                                // after the list was fetched. Reconcile by name.
+                                remote = try await DaemonAPI.playlists()
+                                if !remote.contains(where: { $0.name == operation.playlistName }) {
+                                    throw error
+                                }
+                            }
+                        }
+                    case .delete:
+                        if let existing {
+                            try await DaemonAPI.deletePlaylist(id: existing.id)
+                            remote.removeAll { $0.name == operation.playlistName }
+                        }
+                    case .add:
+                        if let existing, let track = operation.track {
+                            try await DaemonAPI.addToPlaylist(id: existing.id, track: track)
+                        }
+                    case .remove:
+                        if let existing, let source = operation.source, let trackId = operation.trackId {
+                            try await DaemonAPI.removeFromPlaylist(id: existing.id, source: source, trackId: trackId)
+                        }
+                    }
+                    pendingPlaylistOperations.removeFirst()
+                    savePendingPlaylistOperations()
+                }
+                let fresh = try await DaemonAPI.playlists()
+                guard pendingPlaylistOperations.isEmpty else { continue }
+                playlists = fresh
+                savePlaylistCache()
+                break
             }
+        } catch {
+            // Keep showing cached data and retain the failed operation for retry.
         }
     }
 
@@ -243,35 +360,70 @@ final class LibraryStore: ObservableObject {
     func createPlaylist(name: String) {
         let clean = name.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return }
-        Task {
-            try? await DaemonAPI.createPlaylist(name: clean)
-            reloadPlaylists()
-        }
+        guard !playlists.contains(where: { $0.name == clean }) else { return }
+        let localId = -Int64(Date().timeIntervalSince1970 * 1_000_000)
+        playlists.insert(PlaylistInfo(id: localId, name: clean, count: 0), at: 0)
+        pendingPlaylistOperations.append(PendingPlaylistOperation(kind: .create, playlistName: clean))
+        savePendingPlaylistOperations()
+        savePlaylistCache()
+        Task { await syncPlaylists() }
     }
 
     func deletePlaylist(_ playlist: PlaylistInfo) {
-        Task {
-            try? await DaemonAPI.deletePlaylist(id: playlist.id)
-            reloadPlaylists()
-        }
+        playlists.removeAll { $0.name == playlist.name }
+        playlistTrackCache.removeValue(forKey: playlist.name)
+        pendingPlaylistOperations.append(PendingPlaylistOperation(kind: .delete, playlistName: playlist.name))
+        savePendingPlaylistOperations()
+        savePlaylistCache()
+        Task { await syncPlaylists() }
     }
 
     func addToPlaylist(_ playlist: PlaylistInfo, track: Track) {
-        Task {
-            try? await DaemonAPI.addToPlaylist(id: playlist.id, track: track)
-            reloadPlaylists()
+        var tracks = playlistTrackCache[playlist.name] ?? []
+        guard !tracks.contains(where: { $0.searchKey == track.searchKey }) else { return }
+        tracks.append(track)
+        playlistTrackCache[playlist.name] = tracks
+        playlists = playlists.map {
+            $0.name == playlist.name ? PlaylistInfo(id: $0.id, name: $0.name, count: tracks.count) : $0
         }
+        pendingPlaylistOperations.append(PendingPlaylistOperation(kind: .add, playlistName: playlist.name, track: track))
+        savePendingPlaylistOperations()
+        savePlaylistCache()
+        Task { await syncPlaylists() }
     }
 
     func removeFromPlaylist(_ playlist: PlaylistInfo, track: Track) {
-        Task {
-            try? await DaemonAPI.removeFromPlaylist(id: playlist.id, source: track.source, trackId: track.id)
-            reloadPlaylists()
+        playlistTrackCache[playlist.name]?.removeAll { $0.searchKey == track.searchKey }
+        let count = playlistTrackCache[playlist.name]?.count ?? max(0, playlist.count - 1)
+        playlists = playlists.map {
+            $0.name == playlist.name ? PlaylistInfo(id: $0.id, name: $0.name, count: count) : $0
         }
+        pendingPlaylistOperations.append(PendingPlaylistOperation(
+            kind: .remove,
+            playlistName: playlist.name,
+            source: track.source,
+            trackId: track.id
+        ))
+        savePendingPlaylistOperations()
+        savePlaylistCache()
+        Task { await syncPlaylists() }
+    }
+
+    func cachedTracks(_ playlist: PlaylistInfo) -> [Track] {
+        playlistTrackCache[playlist.name] ?? []
     }
 
     func tracks(_ playlist: PlaylistInfo) async -> [Track] {
-        (try? await DaemonAPI.playlistTracks(id: playlist.id)) ?? []
+        guard playlist.id > 0,
+              !pendingPlaylistOperations.contains(where: { $0.playlistName == playlist.name }) else {
+            return cachedTracks(playlist)
+        }
+        if let tracks = try? await DaemonAPI.playlistTracks(id: playlist.id) {
+            playlistTrackCache[playlist.name] = tracks
+            savePlaylistCache()
+            return tracks
+        }
+        return cachedTracks(playlist)
     }
 
     // ============ файлы с телефона ============
@@ -279,46 +431,12 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var localFiles: [Track] = []
     @Published private(set) var localFileKeys: Set<String> = []
 
-    /// Импорт трека файлом с телефона: копируем в Documents/Downloads/<md5>.mp3
-    /// и добавляем в библиотеку. Всё локально — демон/сеть не нужны.
-    func addLocalFile(from src: URL, fileName: String) {
-        let fm = FileManager.default
-        let downloads = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Downloads", isDirectory: true)
-        try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
-
-        guard let data = try? Data(contentsOf: src), !data.isEmpty else { return }
-
-        let title = (fileName as NSString).deletingPathExtension
-
-        let track = Track(
-            id: data.md5Hex,
-            title: title,
-            artist: "Локальный файл",
-            source: "local",
-            previewUrl: nil,
-            artworkUrl: nil,
-            durationMs: nil
-        )
-        let key = DownloadManager.taskKey(for: track) // md5(searchKey)
-        let dest = downloads.appendingPathComponent("\(key).mp3")
-
-        // Не копируем повторно
-        guard !fm.fileExists(atPath: dest.path) else {
-            if !localFileKeys.contains(track.searchKey) {
-                localFiles.append(track)
-                localFileKeys.insert(track.searchKey)
-                persistLocalFiles()
-            }
-            return
-        }
-
-        do {
-            try data.write(to: dest)
-        } catch {
-            return
-        }
-
+    /// Import through a security-scoped, coordinated read (Files/iCloud), off
+    /// the main actor so large audio files do not freeze the library screen.
+    func addLocalFile(from src: URL, fileName: String) async throws {
+        let track = try await Task.detached(priority: .userInitiated) {
+            try copyLocalAudioFile(from: src, fileName: fileName)
+        }.value
         if !localFileKeys.contains(track.searchKey) {
             localFiles.append(track)
             localFileKeys.insert(track.searchKey)
@@ -350,7 +468,7 @@ final class LibraryStore: ObservableObject {
                 localFileKeys = Set(arr.map(\.searchKey))
             }
         }
-        // Реальная длительность уже скачанных mp3 (YT Music её часто не отдаёт в поиске).
+        // Реальная длительность импортированных/скачанных аудиофайлов.
         DownloadManager.shared.measureLocalDurations()
     }
 
@@ -358,4 +476,69 @@ final class LibraryStore: ObservableObject {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalFiles.json")
     }
+}
+
+private enum LocalAudioImportError: LocalizedError {
+    case accessDenied
+    case emptyFile
+    case readFailed(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .accessDenied: return "Нет доступа к выбранному файлу"
+        case .emptyFile: return "Выбранный аудиофайл пуст"
+        case .readFailed(let error): return "Не удалось скопировать аудиофайл: \(error.localizedDescription)"
+        }
+    }
+}
+
+private func copyLocalAudioFile(from source: URL, fileName: String) throws -> Track {
+    let accessing = source.startAccessingSecurityScopedResource()
+    defer { if accessing { source.stopAccessingSecurityScopedResource() } }
+
+    let fileManager = FileManager.default
+    let downloads = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Downloads", isDirectory: true)
+    try fileManager.createDirectory(at: downloads, withIntermediateDirectories: true)
+
+    let rawExtension = (fileName as NSString).pathExtension.lowercased()
+    let fileExtension = rawExtension.range(of: "^[a-z0-9]{1,10}$", options: .regularExpression) != nil
+        ? rawExtension : "mp3"
+    let title = (fileName as NSString).deletingPathExtension
+    let coordinator = NSFileCoordinator(filePresenter: nil)
+    var coordinationError: NSError?
+    var readError: Error?
+    var importedTrack: Track?
+
+    coordinator.coordinate(readingItemAt: source, options: .withoutChanges, error: &coordinationError) { readableURL in
+        do {
+            let values = try readableURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { throw LocalAudioImportError.emptyFile }
+            let data = try Data(contentsOf: readableURL, options: .mappedIfSafe)
+            guard !data.isEmpty else { throw LocalAudioImportError.emptyFile }
+
+            let track = Track(
+                id: data.md5Hex,
+                title: title,
+                artist: "Локальный файл",
+                source: "local",
+                previewUrl: nil,
+                artworkUrl: nil,
+                durationMs: nil,
+                localFileExtension: fileExtension
+            )
+            let destination = downloads.appendingPathComponent("\(track.searchKey.md5Hex).\(fileExtension)")
+            if !fileManager.fileExists(atPath: destination.path) {
+                try data.write(to: destination, options: .atomic)
+            }
+            importedTrack = track
+        } catch {
+            readError = error
+        }
+    }
+
+    if let coordinationError { throw LocalAudioImportError.readFailed(coordinationError) }
+    if let readError { throw LocalAudioImportError.readFailed(readError) }
+    guard let importedTrack else { throw LocalAudioImportError.accessDenied }
+    return importedTrack
 }
