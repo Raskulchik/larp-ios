@@ -118,6 +118,31 @@ impl AppState {
         v
     }
 
+    pub fn downloaded_track_path(&self, job_id: &str) -> anyhow::Result<Option<std::path::PathBuf>> {
+        self.db.lock().unwrap().daemon_track_file(job_id)
+    }
+
+    pub fn remember_downloaded_track(
+        &self,
+        job: &Job,
+        path: &std::path::Path,
+        size_bytes: u64,
+    ) -> anyhow::Result<()> {
+        self.db.lock().unwrap().remember_daemon_track_file(
+            &job.id,
+            &job.source,
+            &job.track_id,
+            &job.title,
+            &job.artist,
+            path,
+            size_bytes,
+        )
+    }
+
+    pub fn forget_downloaded_track(&self, job_id: &str) -> anyhow::Result<()> {
+        self.db.lock().unwrap().forget_daemon_track_file(job_id)
+    }
+
     // ============ shared database (likes / playlists) ============
 
     pub fn like(&self, track: &Track) -> anyhow::Result<()> {

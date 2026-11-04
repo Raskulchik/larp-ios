@@ -1,5 +1,5 @@
-use rusqlite::{Connection, params};
-use std::path::Path;
+use rusqlite::{Connection, OptionalExtension, params};
+use std::path::{Path, PathBuf};
 use crate::api::{Source, Track};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -74,10 +74,75 @@ impl Database {
                 position INTEGER NOT NULL,
                 FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
                 UNIQUE(playlist_id, source, track_id)
-            );"
+            );
+
+            CREATE TABLE IF NOT EXISTS daemon_track_files (
+                job_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                track_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_daemon_track_files_source_track
+                ON daemon_track_files(source, track_id);"
         )?;
 
         Ok(Self { conn })
+    }
+
+    /// Find a previously downloaded track by the daemon's stable job ID.
+    pub fn daemon_track_file(&self, job_id: &str) -> anyhow::Result<Option<PathBuf>> {
+        let path = self.conn.query_row(
+            "SELECT file_path FROM daemon_track_files WHERE job_id = ?1",
+            [job_id],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(path.map(PathBuf::from))
+    }
+
+    /// Persist the shared music-player-tui file used for a streaming track.
+    pub fn remember_daemon_track_file(
+        &self,
+        job_id: &str,
+        source: &str,
+        track_id: &str,
+        title: &str,
+        artist: &str,
+        path: &Path,
+        size_bytes: u64,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO daemon_track_files
+                (job_id, source, track_id, title, artist, file_path, size_bytes, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+             ON CONFLICT(job_id) DO UPDATE SET
+                source = excluded.source,
+                track_id = excluded.track_id,
+                title = excluded.title,
+                artist = excluded.artist,
+                file_path = excluded.file_path,
+                size_bytes = excluded.size_bytes,
+                updated_at = datetime('now')",
+            params![
+                job_id,
+                source,
+                track_id,
+                title,
+                artist,
+                path.to_string_lossy(),
+                size_bytes.min(i64::MAX as u64) as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn forget_daemon_track_file(&self, job_id: &str) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM daemon_track_files WHERE job_id = ?1", [job_id])?;
+        Ok(())
     }
 
     pub fn like_track(&self, track: &Track) -> anyhow::Result<()> {

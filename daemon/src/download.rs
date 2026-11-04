@@ -2,6 +2,145 @@ use crate::jobs::{AppState, Job, file_name_for};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+/// Add old daemon downloads to music-player-tui's library with hard links.
+/// The audio blocks remain shared, and the legacy daemon paths are preserved.
+pub fn share_legacy_downloads(conf: &crate::config::Config) -> (usize, usize) {
+    use id3::TagLike;
+    use std::os::unix::fs::MetadataExt;
+
+    let source_dir = conf.files_dir();
+    let target_dir = &conf.tui_downloads_dir;
+    let Ok(entries) = std::fs::read_dir(&source_dir) else {
+        return (0, 0);
+    };
+    if std::fs::create_dir_all(target_dir).is_err() {
+        return (0, 0);
+    }
+
+    let mut linked = 0;
+    let mut skipped = 0;
+    for entry in entries.flatten() {
+        let source = entry.path();
+        if source.extension().and_then(|ext| ext.to_str()) != Some("mp3")
+            || !entry.file_type().map(|kind| kind.is_file()).unwrap_or(false)
+        {
+            continue;
+        }
+        let Ok(source_meta) = std::fs::metadata(&source) else {
+            skipped += 1;
+            continue;
+        };
+        if source_meta.len() == 0 {
+            skipped += 1;
+            continue;
+        }
+
+        let tags = id3::Tag::read_from_path(&source).ok();
+        let title = tags.as_ref().and_then(|tag| tag.title()).unwrap_or_else(|| {
+            source.file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown track")
+        });
+        let artist = tags.as_ref().and_then(|tag| tag.artist()).unwrap_or("Unknown artist");
+        let legacy_id = source.file_stem().and_then(|s| s.to_str()).unwrap_or("track");
+        let existing_match = tui_download_match(target_dir, artist, title);
+        if let Some(existing) = existing_match.as_ref() {
+            let same_inode = std::fs::metadata(existing)
+                .map(|m| m.dev() == source_meta.dev() && m.ino() == source_meta.ino())
+                .unwrap_or(false);
+            if same_inode {
+                skipped += 1;
+                continue;
+            }
+            if files_equal(&source, existing) {
+                if replace_with_hard_link(&source, existing, legacy_id) {
+                    linked += 1;
+                } else {
+                    skipped += 1;
+                }
+                continue;
+            }
+        }
+        let sanitize = |s: &str| {
+            s.chars()
+                .map(|c| match c {
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                    _ => c,
+                })
+                .collect::<String>()
+        };
+        let stem = sanitize(&format!("{artist} - {title}"));
+        let mut target = target_dir.join(format!("{stem}.mp3"));
+        if existing_match.is_some() || target.exists() {
+            let same_inode = std::fs::metadata(&target)
+                .map(|m| m.dev() == source_meta.dev() && m.ino() == source_meta.ino())
+                .unwrap_or(false);
+            if same_inode {
+                skipped += 1;
+                continue;
+            }
+            target = target_dir.join(format!("{stem} [larp-{legacy_id}].mp3"));
+        }
+        if target.exists() {
+            let same_inode = std::fs::metadata(&target)
+                .map(|m| m.dev() == source_meta.dev() && m.ino() == source_meta.ino())
+                .unwrap_or(false);
+            if same_inode {
+                skipped += 1;
+                continue;
+            }
+            skipped += 1;
+            continue;
+        }
+        match std::fs::hard_link(&source, &target) {
+            Ok(()) => linked += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    (linked, skipped)
+}
+
+fn files_equal(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::io::Read;
+
+    let Ok(ma) = std::fs::metadata(a) else { return false };
+    let Ok(mb) = std::fs::metadata(b) else { return false };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    let (Ok(mut fa), Ok(mut fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else {
+        return false;
+    };
+    let mut ba = [0u8; 64 * 1024];
+    let mut bb = [0u8; 64 * 1024];
+    loop {
+        let (Ok(na), Ok(nb)) = (fa.read(&mut ba), fb.read(&mut bb)) else { return false };
+        if na != nb || ba[..na] != bb[..nb] {
+            return false;
+        }
+        if na == 0 {
+            return true;
+        }
+    }
+}
+
+/// Atomically replace one legacy directory entry with a hard link to its
+/// identical shared-library file; the track remains available at both paths.
+fn replace_with_hard_link(
+    legacy: &std::path::Path,
+    shared: &std::path::Path,
+    stable_id: &str,
+) -> bool {
+    let Some(parent) = legacy.parent() else { return false };
+    let temp = parent.join(format!(".share-{stable_id}-{}.tmp", std::process::id()));
+    if std::fs::hard_link(shared, &temp).is_err() {
+        return false;
+    }
+    if std::fs::rename(&temp, legacy).is_err() {
+        let _ = std::fs::remove_file(temp);
+        return false;
+    }
+    true
+}
+
 pub fn spawn_download(state: std::sync::Arc<AppState>, job: Job) {
     tokio::spawn(async move {
         if let Err(e) = run_download(&state, &job).await {
@@ -45,39 +184,27 @@ fn now() -> u64 {
 
 async fn run_download(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow::Result<()> {
     let conf = &state.conf;
-    std::fs::create_dir_all(conf.files_dir())?;
-    let final_path = conf.files_dir().join(file_name_for(&job.id));
+    std::fs::create_dir_all(&conf.tui_downloads_dir)?;
 
-    // Уже скачано — просто отдаём ссылку.
-    if final_path.exists() && std::fs::metadata(&final_path)?.len() > 0 {
-        let size = std::fs::metadata(&final_path)?.len();
-        update(state, &job.id, |j| {
-            j.state = "done".into();
-            j.progress = 100.0;
-            j.file_name = Some(file_name_for(&job.id));
-            j.file_url = Some(format!("/files/{}", file_name_for(&job.id)));
-            j.size_bytes = Some(size);
-            j.message = "already downloaded".into();
-        }).await;
-        return Ok(());
+    if let Some(path) = state.downloaded_track_path(&job.id)? {
+        if path.is_file() {
+            return mark_download_done(state, job, &path, "found in shared download database").await;
+        }
+        state.forget_downloaded_track(&job.id)?;
     }
 
-    // Трек уже скачан TUI-плеером (файлы «Артист - Название.mp3» в tui_downloads_dir)?
-    // Тогда не качаем заново — симлинк на файл с компа, phone тянет его по локальной сети.
-    if !conf.tui_downloads_dir.as_os_str().is_empty() && conf.tui_downloads_dir.is_dir() {
-        if let Some(src) = tui_download_match(&conf.tui_downloads_dir, &job.artist, &job.title) {
-            std::os::unix::fs::symlink(&src, &final_path)?;
-            let size = std::fs::metadata(&final_path)?.len();
-            update(state, &job.id, |j| {
-                j.state = "done".into();
-                j.progress = 100.0;
-                j.file_name = Some(file_name_for(&job.id));
-                j.file_url = Some(format!("/files/{}", file_name_for(&job.id)));
-                j.size_bytes = Some(size);
-                j.message = "found in TUI downloads".into();
-            }).await;
-            return Ok(());
-        }
+    // Reuse the actual TUI download in place; no symlink or second audio copy.
+    if let Some(path) = tui_download_match(&conf.tui_downloads_dir, &job.artist, &job.title) {
+        return mark_download_done(state, job, &path, "found in music-player-tui downloads").await;
+    }
+
+    // Keep serving files made by older daemon versions until they are naturally
+    // replaced. New downloads are written into the shared TUI library.
+    let legacy_path = conf.files_dir().join(file_name_for(&job.id));
+
+    // Уже скачано — просто отдаём ссылку.
+    if legacy_path.is_file() && std::fs::metadata(&legacy_path)?.len() > 0 {
+        return mark_download_done(state, job, &legacy_path, "found in legacy daemon downloads").await;
     }
 
     update(state, &job.id, |j| j.state = "running".into()).await;
@@ -88,6 +215,46 @@ async fn run_download(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow::Re
         "soundcloud" => download_ytd(state, job, YtdKind::SoundCloud).await,
         other => anyhow::bail!("unknown source: {other}"),
     }
+}
+
+async fn mark_download_done(
+    state: &std::sync::Arc<AppState>,
+    job: &Job,
+    path: &std::path::Path,
+    message: &str,
+) -> anyhow::Result<()> {
+    let size = std::fs::metadata(path)?.len();
+    state.remember_downloaded_track(job, path, size)?;
+    update(state, &job.id, |j| {
+        j.state = "done".into();
+        j.progress = 100.0;
+        j.file_name = Some(file_name_for(&job.id));
+        j.file_url = Some(format!("/files/{}", file_name_for(&job.id)));
+        j.size_bytes = Some(size);
+        j.message = message.to_string();
+    })
+    .await;
+    Ok(())
+}
+
+fn shared_download_path(state: &AppState, job: &Job) -> std::path::PathBuf {
+    let sanitize = |s: &str| {
+        s.chars()
+            .map(|c| match c {
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                _ => c,
+            })
+            .collect::<String>()
+    };
+    let stem = sanitize(&format!("{} - {}", job.artist, job.title));
+    let primary = state.conf.tui_downloads_dir.join(format!("{stem}.mp3"));
+    if !primary.exists() || tui_download_match(&state.conf.tui_downloads_dir, &job.artist, &job.title).is_some() {
+        return primary;
+    }
+    state
+        .conf
+        .tui_downloads_dir
+        .join(format!("{stem} [larp-{}].mp3", job.id))
 }
 
 /// Обложку берём через ytmeta.py (крупную) и вшиваем в ID3 — она живёт в самом треке.
@@ -116,8 +283,8 @@ async fn download_yandex(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow:
         anyhow::bail!("empty yandex download url");
     }
 
-    let final_path = conf.files_dir().join(file_name_for(&job.id));
-    let tmp_path = conf.files_dir().join(format!(".tmp-{}", file_name_for(&job.id)));
+    let final_path = shared_download_path(state, job);
+    let tmp_path = conf.tui_downloads_dir.join(format!(".tmp-{}.mp3", job.id));
 
     let client = reqwest::Client::new();
     let resp = client.get(&url).send().await?;
@@ -156,16 +323,7 @@ async fn download_yandex(state: &std::sync::Arc<AppState>, job: &Job) -> anyhow:
     attach_cover(state, job, &final_path).await;
 
     let size = std::fs::metadata(&final_path)?.len();
-    update(state, &job.id, |j| {
-        j.state = "done".into();
-        j.progress = 100.0;
-        j.file_name = Some(file_name_for(&job.id));
-        j.file_url = Some(format!("/files/{}", file_name_for(&job.id)));
-        j.size_bytes = Some(size);
-        j.message = format!("{} bytes", size);
-    }).await;
-
-    Ok(())
+    mark_download_done(state, job, &final_path, &format!("{} bytes", size)).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,8 +342,8 @@ async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, kind: YtdKind
         YtdKind::SoundCloud => larp_core::api::soundcloud_permalink(&job.track_id).await?,
     };
 
-    let final_path = conf.files_dir().join(file_name_for(&job.id));
-    let tmp_base = conf.files_dir().join(format!(".tmp-{}", job.id));
+    let final_path = shared_download_path(state, job);
+    let tmp_base = conf.tui_downloads_dir.join(format!(".tmp-{}", job.id));
 
     let mut cmd = Command::new(&conf.ytdlp);
     cmd.args(["--newline", "--no-playlist", "-x"])
@@ -260,15 +418,7 @@ async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, kind: YtdKind
     attach_cover(state, job, &final_path).await;
 
     let size = std::fs::metadata(&final_path)?.len();
-    update(state, &job.id, |j| {
-        j.state = "done".into();
-        j.progress = 100.0;
-        j.file_name = Some(file_name_for(&job.id));
-        j.file_url = Some(format!("/files/{}", file_name_for(&job.id)));
-        j.size_bytes = Some(size);
-    }).await;
-
-    Ok(())
+    mark_download_done(state, job, &final_path, &format!("{} bytes", size)).await
 }
 
 fn parse_ytdlp_progress(line: &str) -> Option<f32> {

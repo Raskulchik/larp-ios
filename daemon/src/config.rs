@@ -10,6 +10,15 @@ fn home() -> PathBuf {
     std::env::var("HOME").unwrap_or_else(|_| ".".to_string()).into()
 }
 
+fn player_downloads_dir() -> PathBuf {
+    let data = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".local").join("share"));
+    data.join("music-player-tui").join("downloads")
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub listen: String,
@@ -50,10 +59,7 @@ impl Default for Config {
                 .join(".config")
                 .join("music-player-tui")
                 .join("liked.db"),
-            tui_downloads_dir: home()
-                .join(".cache")
-                .join("music-player-tui")
-                .join("downloads"),
+            tui_downloads_dir: player_downloads_dir(),
             ytdlp: "yt-dlp".to_string(),
             ytdlp_cookies: String::new(),
             ytdlp_cookies_browser: String::new(),
@@ -107,6 +113,14 @@ impl Config {
         }
         if cfg.tui_downloads_dir.as_os_str().is_empty() {
             cfg.tui_downloads_dir = Config::default().tui_downloads_dir;
+        }
+        let legacy_player_downloads = home()
+            .join(".cache")
+            .join("music-player-tui")
+            .join("downloads");
+        let current_player_downloads = player_downloads_dir();
+        if cfg.tui_downloads_dir == legacy_player_downloads {
+            cfg.tui_downloads_dir = current_player_downloads;
         }
         if let Ok(cookies) = std::env::var("LARP_YTDLP_COOKIES") {
             if !cookies.is_empty() {

@@ -47,6 +47,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     std::fs::create_dir_all(conf.files_dir())?;
+    let (shared_count, skipped_count) = download::share_legacy_downloads(&conf);
+    if shared_count > 0 || skipped_count > 0 {
+        println!(
+            "shared legacy daemon tracks with music-player-tui: {shared_count} linked, {skipped_count} skipped"
+        );
+    }
 
     // Общая с TUI-плеером база лайков/плейлистов.
     let db = larp_core::db::Database::open_at(&conf.db_path)
@@ -432,7 +438,13 @@ async fn serve_file(State(state): State<Arc<AppState>>, Path(name): Path<String>
     if !is_valid_file_name(&name) {
         return (StatusCode::BAD_REQUEST, "bad file name").into_response();
     }
-    let path = state.conf.files_dir().join(&name);
+    let job_id = &name[..32];
+    let mapped_path = state
+        .downloaded_track_path(job_id)
+        .ok()
+        .flatten()
+        .filter(|path| path.is_file());
+    let path = mapped_path.unwrap_or_else(|| state.conf.files_dir().join(&name));
     let meta = match tokio::fs::metadata(&path).await {
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
