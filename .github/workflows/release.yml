@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  daemon:
+    name: Linux daemon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build daemon
+        run: cargo build --release --locked -p larp-daemon
+      - name: Package daemon
+        run: |
+          mkdir -p dist
+          cp target/release/larp-daemon dist/
+          cp larp-daemon.service README.md dist/
+          tar -czf larp-daemon-linux-x86_64.tar.gz -C dist .
+          sha256sum larp-daemon-linux-x86_64.tar.gz > larp-daemon-linux-x86_64.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-daemon
+          path: |
+            larp-daemon-linux-x86_64.tar.gz
+            larp-daemon-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+
+  ios:
+    name: iOS unsigned IPA
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build Rust core for iOS
+        run: ./ios/build-rust.sh
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate --spec ios/project.yml
+          if grep -q "objectVersion = 77" ios/LarpiOS.xcodeproj/project.pbxproj; then
+            sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' ios/LarpiOS.xcodeproj/project.pbxproj
+          fi
+      - name: Build app without signing
+        run: |
+          xcodebuild -project ios/LarpiOS.xcodeproj -scheme LarpiOS \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Larpi.app Payload/
+          zip -qr Larpi-iOS-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-ios
+          path: Larpi-iOS-unsigned.ipa
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [daemon, ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          body: |
+            The included Larpi IPA is unsigned and must be signed before installing on an iPhone.
+            The daemon archive is for Linux x86_64.
