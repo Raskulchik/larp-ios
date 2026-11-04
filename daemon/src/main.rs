@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/download", post(create_job))
+        .route("/api/download-file", get(download_file))
         .route("/api/search", get(search))
         .route("/api/lyrics", get(lyrics::lyrics))
         .route("/api/jobs", get(list_jobs))
@@ -212,30 +213,19 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     })
 }
 
-async fn create_job(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<DownloadReq>,
-) -> Response {
+async fn start_download(state: Arc<AppState>, req: DownloadReq) -> Result<jobs::Job, (StatusCode, String)> {
     if larp_core::api::Source::from_str(&req.source).is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"ok": false, "error": format!("unknown source {}", req.source)})),
-        )
-            .into_response();
+        return Err((StatusCode::BAD_REQUEST, format!("unknown source {}", req.source)));
     }
     if req.track_id.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"ok": false, "error": "track_id is empty"})),
-        )
-            .into_response();
+        return Err((StatusCode::BAD_REQUEST, "track_id is empty".into()));
     }
 
     let id = job_id(&req.source, &req.track_id);
     let existing = state.get(&id).await;
     if let Some(job) = existing {
         if job.state == "done" || job.state == "running" {
-            return Json(serde_json::json!({"ok": true, "job": job})).into_response();
+            return Ok(job);
         }
     }
 
@@ -252,7 +242,58 @@ async fn create_job(
         state.upsert(job.clone()).await;
     }
     download::spawn_download(state.clone(), job.clone());
-    Json(serde_json::json!({"ok": true, "job": job})).into_response()
+    Ok(job)
+}
+
+async fn create_job(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<DownloadReq>,
+) -> Response {
+    match start_download(state, req).await {
+        Ok(job) => Json(serde_json::json!({"ok": true, "job": job})).into_response(),
+        Err((status, message)) => (
+            status,
+            Json(serde_json::json!({"ok": false, "error": message})),
+        )
+            .into_response(),
+    }
+}
+
+/// Long-poll a download job and stream the resulting file in one response.
+/// iOS uses a background URLSession download task for this endpoint, so the
+/// phone can finish transferring the file while Larpi is suspended.
+async fn download_file(
+    State(state): State<Arc<AppState>>,
+    Query(req): Query<DownloadReq>,
+) -> Response {
+    let job = match start_download(state.clone(), req).await {
+        Ok(job) => job,
+        Err((status, message)) => {
+            return (
+                status,
+                Json(serde_json::json!({"ok": false, "error": message})),
+            )
+                .into_response();
+        }
+    };
+
+    loop {
+        match state.get(&job.id).await {
+            Some(current) if current.state == "done" => {
+                let name = jobs::file_name_for(&job.id);
+                return serve_file(State(state), Path(name), HeaderMap::new()).await;
+            }
+            Some(current) if current.state == "error" => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({"ok": false, "error": current.message})),
+                )
+                    .into_response();
+            }
+            Some(_) => tokio::time::sleep(Duration::from_millis(750)).await,
+            None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
 }
 
 async fn list_jobs(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
