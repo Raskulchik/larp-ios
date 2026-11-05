@@ -48,7 +48,11 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
         didFinishDownloadingTo location: URL
     ) {
         guard let metadata = BackgroundTransferMetadata.decode(downloadTask.taskDescription) else { return }
-        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
+        guard let response = downloadTask.response as? HTTPURLResponse else {
+            onFailure?(metadata, "Демон вернул ответ без HTTP статуса")
+            return
+        }
+        let status = response.statusCode
         guard status == 200 || status == 206 else {
             onFailure?(metadata, responseError(at: location, status: status))
             return
@@ -56,6 +60,12 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
 
         do {
             let fileManager = FileManager.default
+            let temporaryAttributes = try fileManager.attributesOfItem(atPath: location.path)
+            let temporarySize = (temporaryAttributes[.size] as? NSNumber)?.int64Value ?? 0
+            guard temporarySize >= 1_024 else {
+                onFailure?(metadata, "Демон передал пустой или слишком маленький аудиофайл")
+                return
+            }
             let downloads = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("Downloads", isDirectory: true)
             try fileManager.createDirectory(at: downloads, withIntermediateDirectories: true)
@@ -65,6 +75,12 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
             let staging = downloads.appendingPathComponent(".\(metadata.key)-\(UUID().uuidString).download")
             defer { try? fileManager.removeItem(at: staging) }
             try fileManager.copyItem(at: location, to: staging)
+            let stagedAttributes = try fileManager.attributesOfItem(atPath: staging.path)
+            let stagedSize = (stagedAttributes[.size] as? NSNumber)?.int64Value ?? 0
+            guard stagedSize == temporarySize else {
+                onFailure?(metadata, "Аудиофайл скопировался не полностью")
+                return
+            }
             if fileManager.fileExists(atPath: destination.path) {
                 try fileManager.removeItem(at: destination)
             }

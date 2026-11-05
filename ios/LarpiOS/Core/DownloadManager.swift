@@ -1,15 +1,17 @@
 import AVFoundation
 import Foundation
 
-private enum AudioFile {
+enum AudioFile {
     static func durationMs(of url: URL) async -> Int64? {
         let asset = AVURLAsset(url: url)
-        guard let secs = try? await asset.load(.duration).seconds, secs > 0 else { return nil }
-        return Int64((secs * 1000).rounded())
+        guard let seconds = try? await asset.load(.duration).seconds,
+              seconds.isFinite, seconds > 0 else { return nil }
+        return Int64((seconds * 1_000).rounded())
     }
 }
 
-/// Скачивает готовые файлы с домашнего демона фоновой URLSession.
+/// Owns the complete remote audio lifecycle: cache validation, background transfer,
+/// atomic file installation, restoration after relaunch, and per-track UI state.
 @MainActor
 final class DownloadManager: ObservableObject {
     static let shared = DownloadManager()
@@ -31,21 +33,28 @@ final class DownloadManager: ObservableObject {
         var failed: Int
     }
 
-    @Published var tasks: [String: DownloadTaskInfo] = [:]
+    private struct Waiter {
+        let onComplete: ((URL?) -> Void)?
+        let countsTowardBulk: Bool
+    }
+
+    @Published private(set) var tasks: [String: DownloadTaskInfo] = [:]
     @Published private(set) var bulk: BulkDownload?
     @Published private(set) var bulkActive = false
     @Published private(set) var durations: [String: Int64] = [:]
 
-    private let docsDir: URL
-    private let backgroundSession: URLSession
-    private let backgroundDelegate: BackgroundDownloadDelegate
-    private var completionHandlers: [String: (URL?) -> Void] = [:]
+    private let downloadsDirectory: URL
+    private let session: URLSession
+    private let delegate: BackgroundDownloadDelegate
+    private var waiters: [String: [Waiter]] = [:]
     private var backgroundEventsCompletionHandler: (() -> Void)?
+    private var bulkKeys = Set<String>()
 
     private init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        docsDir = documents.appendingPathComponent("Downloads", isDirectory: true)
-        try? FileManager.default.createDirectory(at: docsDir, withIntermediateDirectories: true)
+        downloadsDirectory = documents.appendingPathComponent("Downloads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: downloadsDirectory, withIntermediateDirectories: true)
+
         if let data = UserDefaults.standard.data(forKey: Self.durationsKey),
            let saved = try? JSONDecoder().decode([String: Int64].self, from: data) {
             durations = saved
@@ -56,36 +65,47 @@ final class DownloadManager: ObservableObject {
             bulkActive = saved.done + saved.failed < saved.total
         }
 
-        let delegate = BackgroundDownloadDelegate()
-        backgroundDelegate = delegate
-        let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionIdentifier)
-        config.sessionSendsLaunchEvents = true
-        config.isDiscretionary = false
-        config.waitsForConnectivity = true
-        config.httpMaximumConnectionsPerHost = 3
-        config.timeoutIntervalForRequest = 6 * 60 * 60
-        config.timeoutIntervalForResource = 6 * 60 * 60
-        backgroundSession = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        let transferDelegate = BackgroundDownloadDelegate()
+        delegate = transferDelegate
+        let configuration = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionIdentifier)
+        configuration.sessionSendsLaunchEvents = true
+        configuration.isDiscretionary = false
+        configuration.waitsForConnectivity = true
+        configuration.httpMaximumConnectionsPerHost = 3
+        configuration.timeoutIntervalForRequest = 6 * 60 * 60
+        configuration.timeoutIntervalForResource = 6 * 60 * 60
+        session = URLSession(configuration: configuration, delegate: transferDelegate, delegateQueue: nil)
 
-        delegate.onProgress = { [weak self] metadata, progress in
+        transferDelegate.onProgress = { [weak self] metadata, progress in
             Task { @MainActor [weak self] in self?.transferProgress(metadata, progress: progress) }
         }
-        delegate.onFinished = { [weak self] metadata, url in
+        transferDelegate.onFinished = { [weak self] metadata, url in
             Task { @MainActor [weak self] in self?.transferFinished(metadata, at: url) }
         }
-        delegate.onFailure = { [weak self] metadata, message in
+        transferDelegate.onFailure = { [weak self] metadata, message in
             Task { @MainActor [weak self] in self?.transferFailed(metadata, message: message) }
         }
-        delegate.onEventsFinished = { [weak self] in
+        transferDelegate.onEventsFinished = { [weak self] in
             Task { @MainActor [weak self] in self?.finishBackgroundEvents() }
         }
 
-        backgroundSession.getAllTasks { [weak self] sessionTasks in
-            let restored = sessionTasks.compactMap { task -> RestoredBackgroundTransfer? in
-                guard let metadata = BackgroundTransferMetadata.decode(task.taskDescription) else { return nil }
-                let total = task.countOfBytesExpectedToReceive
-                let progress = total > 0 ? min(100, Double(task.countOfBytesReceived) / Double(total) * 100) : 0
-                return RestoredBackgroundTransfer(metadata: metadata, progress: progress, isRunning: task.state == .running)
+        session.getAllTasks { sessionTasks in
+            var restored: [RestoredBackgroundTransfer] = []
+            for task in sessionTasks {
+                guard let metadata = BackgroundTransferMetadata.decode(task.taskDescription) else {
+                    task.cancel()
+                    continue
+                }
+                if task.state == .suspended { task.resume() }
+                let expected = task.countOfBytesExpectedToReceive
+                let progress = expected > 0
+                    ? min(100, Double(task.countOfBytesReceived) / Double(expected) * 100)
+                    : 0
+                restored.append(RestoredBackgroundTransfer(
+                    metadata: metadata,
+                    progress: progress,
+                    isRunning: task.state == .running || task.state == .suspended
+                ))
             }
             Task { @MainActor [weak self] in self?.restoreTransfers(restored) }
         }
@@ -93,36 +113,52 @@ final class DownloadManager: ObservableObject {
 
     private func key(_ track: Track) -> String { track.searchKey.md5Hex }
     static func taskKey(for track: Track) -> String { track.searchKey.md5Hex }
-    private func fileURL(name: String) -> URL { docsDir.appendingPathComponent(name) }
-    func info(for track: Track) -> DownloadTaskInfo? { tasks[Self.taskKey(for: track)] }
-
-    func localFileURL(for track: Track) -> URL? {
+    private func fileURL(for track: Track) -> URL {
         let ext = track.source == "local" ? (track.localFileExtension ?? "mp3") : "mp3"
-        let url = fileURL(name: "\(key(track)).\(ext)")
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return downloadsDirectory.appendingPathComponent("\(key(track)).\(ext)")
+    }
 
-        // Older failed background transfers could leave an empty/truncated MP3 in
-        // Documents. Treat it as a cache miss so playback retries the daemon.
+    func info(for track: Track) -> DownloadTaskInfo? { tasks[key(track)] }
+    func isDownloading(_ track: Track) -> Bool { tasks[key(track)]?.isActive == true }
+    func durationMs(for track: Track) -> Int64? { durations[key(track)] ?? track.durationMs }
+
+    /// Synchronous existence check for artwork and UI. Playback and downloads use
+    /// validatedLocalFileURL instead of trusting that a file merely exists.
+    func localFileURL(for track: Track) -> URL? {
+        let url = fileURL(for: track)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         if track.source != "local" {
-            let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
             guard size >= 1_024 else {
-                try? fileManager.removeItem(at: url)
+                try? FileManager.default.removeItem(at: url)
                 return nil
             }
         }
         return url
     }
 
+    func validatedLocalFileURL(for track: Track) async -> URL? {
+        guard let url = localFileURL(for: track) else { return nil }
+        guard track.source != "local" else { return url }
+        guard let duration = await AudioFile.durationMs(of: url) else {
+            invalidateCachedFile(for: track)
+            durations.removeValue(forKey: key(track))
+            return nil
+        }
+        setDuration(duration, forKey: key(track))
+        return url
+    }
+
     func invalidateCachedFile(for track: Track) {
         guard track.source != "local" else { return }
-        try? FileManager.default.removeItem(at: fileURL(name: "\(key(track)).mp3"))
+        try? FileManager.default.removeItem(at: fileURL(for: track))
     }
 
     func reportPlaybackError(for track: Track, message: String) {
-        let k = key(track)
-        tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: message, isActive: false)
+        tasks[key(track)] = DownloadTaskInfo(
+            state: "error", progress: 0, fileName: nil, error: message, isActive: false
+        )
     }
 
     func remoteStreamURL(for track: Track) -> URL? {
@@ -130,55 +166,83 @@ final class DownloadManager: ObservableObject {
         return base.appendingPathComponent("files").appendingPathComponent("\(key(track)).mp3")
     }
 
-    func durationMs(for track: Track) -> Int64? { durations[key(track)] ?? track.durationMs }
-
     func measureDurationIfMissing(url: URL, track: Track) async -> Int64? {
-        let k = key(track)
-        if let d = durations[k] { return d }
-        if let ms = await AudioFile.durationMs(of: url), ms > 0 { setDuration(ms, forKey: k); return ms }
-        return track.durationMs
+        let trackKey = key(track)
+        if let duration = durations[trackKey] { return duration }
+        guard let duration = await AudioFile.durationMs(of: url) else { return track.durationMs }
+        setDuration(duration, forKey: trackKey)
+        return duration
     }
 
     func measureLocalDurations() {
-        let files = (try? FileManager.default.contentsOfDirectory(atPath: docsDir.path)) ?? []
-        let allowed: Set<String> = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "caf"]
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: downloadsDirectory.path)) ?? []
+        let supported: Set<String> = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "caf"]
         for name in files {
-            let url = fileURL(name: name)
-            let base = url.deletingPathExtension().lastPathComponent
-            guard allowed.contains(url.pathExtension.lowercased()), durations[base] == nil else { continue }
+            let url = downloadsDirectory.appendingPathComponent(name)
+            let trackKey = url.deletingPathExtension().lastPathComponent
+            guard supported.contains(url.pathExtension.lowercased()), durations[trackKey] == nil else { continue }
             Task { [weak self] in
-                guard let self, let ms = await AudioFile.durationMs(of: url), ms > 0 else { return }
-                self.setDuration(ms, forKey: base)
+                guard let self, let duration = await AudioFile.durationMs(of: url) else { return }
+                self.setDuration(duration, forKey: trackKey)
             }
         }
     }
 
-    private func setDuration(_ ms: Int64, forKey key: String) {
-        durations[key] = ms
-        if let data = try? JSONEncoder().encode(durations) { UserDefaults.standard.set(data, forKey: Self.durationsKey) }
+    private func setDuration(_ duration: Int64, forKey trackKey: String) {
+        durations[trackKey] = duration
+        if let data = try? JSONEncoder().encode(durations) {
+            UserDefaults.standard.set(data, forKey: Self.durationsKey)
+        }
     }
 
-    func isDownloading(_ track: Track) -> Bool { tasks[key(track)]?.isActive == true }
-
-    func download(_ track: Track, onComplete: @escaping (URL?) -> Void) {
-        let k = key(track)
-        if let local = localFileURL(for: track) { onComplete(local); return }
-        if tasks[k]?.isActive == true { completionHandlers[k] = onComplete; return }
-        enqueue(track, isBulk: false, onComplete: onComplete)
+    func download(_ track: Track, onComplete: ((URL?) -> Void)? = nil) {
+        requestDownload(track, force: false, isBulk: false, onComplete: onComplete)
     }
 
-    private func enqueue(_ track: Track, isBulk: Bool, onComplete: ((URL?) -> Void)? = nil) {
-        let k = key(track)
+    func redownload(_ track: Track, onComplete: ((URL?) -> Void)? = nil) {
+        requestDownload(track, force: true, isBulk: false, onComplete: onComplete)
+    }
+
+    private func requestDownload(
+        _ track: Track,
+        force: Bool,
+        isBulk: Bool,
+        onComplete: ((URL?) -> Void)?
+    ) {
+        let trackKey = key(track)
+        waiters[trackKey, default: []].append(Waiter(onComplete: onComplete, countsTowardBulk: isBulk))
+        guard tasks[trackKey]?.isActive != true else { return }
+
+        tasks[trackKey] = DownloadTaskInfo(
+            state: force ? "restarting" : "checking", progress: 0,
+            fileName: nil, error: nil, isActive: true
+        )
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if !force, let cachedURL = await self.validatedLocalFileURL(for: track) {
+                self.finish(trackKey: trackKey, metadata: nil, url: cachedURL, error: nil)
+                return
+            }
+            if isBulk && !self.bulkActive {
+                self.finish(trackKey: trackKey, metadata: nil, url: nil, error: "Отменено")
+                return
+            }
+            self.invalidateCachedFile(for: track)
+            self.enqueue(track, isBulk: isBulk)
+        }
+    }
+
+    private func enqueue(_ track: Track, isBulk: Bool) {
+        let trackKey = key(track)
         guard let base = AppSettings.shared.daemonBaseURL else {
-            tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: "Сервер не настроен", isActive: false)
-            onComplete?(nil)
-            if isBulk { recordBulkResult(success: false) }
+            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Сервер не настроен")
             return
         }
-        guard var components = URLComponents(url: base.appendingPathComponent("api/download-file"), resolvingAgainstBaseURL: false) else {
-            tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: "Некорректный адрес сервера", isActive: false)
-            onComplete?(nil)
-            if isBulk { recordBulkResult(success: false) }
+        guard var components = URLComponents(
+            url: base.appendingPathComponent("api/download-file"),
+            resolvingAgainstBaseURL: false
+        ) else {
+            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Некорректный адрес сервера")
             return
         }
         components.queryItems = [
@@ -187,78 +251,110 @@ final class DownloadManager: ObservableObject {
             URLQueryItem(name: "title", value: track.title),
             URLQueryItem(name: "artist", value: track.artist)
         ]
-        guard let url = components.url else { onComplete?(nil); return }
+        guard let url = components.url else {
+            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Не удалось собрать адрес загрузки")
+            return
+        }
+        let metadata = BackgroundTransferMetadata(key: trackKey, track: track, isBulk: isBulk)
+        guard let description = metadata.taskDescription else {
+            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Не удалось создать задачу загрузки")
+            return
+        }
+
         var request = AppSettings.shared.request(url)
         request.httpMethod = "GET"
         request.timeoutInterval = 6 * 60 * 60
-        let task = backgroundSession.downloadTask(with: request)
-        task.taskDescription = BackgroundTransferMetadata(key: k, track: track, isBulk: isBulk).taskDescription
-        completionHandlers[k] = onComplete
-        tasks[k] = DownloadTaskInfo(state: "downloading", progress: 0, fileName: nil, error: nil, isActive: true)
+        let task = session.downloadTask(with: request)
+        task.taskDescription = description
+        tasks[trackKey] = DownloadTaskInfo(
+            state: "downloading", progress: 0, fileName: nil, error: nil, isActive: true
+        )
         task.resume()
     }
 
     private func transferProgress(_ metadata: BackgroundTransferMetadata, progress: Double) {
-        let k = metadata.key
-        if tasks[k] == nil { tasks[k] = DownloadTaskInfo(state: "transferring", progress: progress, fileName: nil, error: nil, isActive: true) }
-        tasks[k]?.state = "transferring"
-        tasks[k]?.progress = progress
+        let trackKey = metadata.key
+        if tasks[trackKey] == nil {
+            tasks[trackKey] = DownloadTaskInfo(
+                state: "downloading", progress: progress, fileName: nil, error: nil, isActive: true
+            )
+        } else {
+            tasks[trackKey]?.state = "downloading"
+            tasks[trackKey]?.progress = progress
+            tasks[trackKey]?.isActive = true
+        }
     }
 
     private func transferFinished(_ metadata: BackgroundTransferMetadata, at url: URL) {
-        let k = metadata.key
-        let name = "\(k).mp3"
-        tasks[k] = DownloadTaskInfo(state: "done", progress: 100, fileName: name, error: nil, isActive: false)
-        completionHandlers.removeValue(forKey: k)?(url)
-        if metadata.isBulk { recordBulkResult(success: true) }
-        Task { [weak self] in
-            guard let self, let ms = await AudioFile.durationMs(of: url), ms > 0 else { return }
-            self.setDuration(ms, forKey: k)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let duration = await AudioFile.durationMs(of: url) else {
+                self.invalidateCachedFile(for: metadata.track)
+                self.finish(
+                    trackKey: metadata.key, metadata: metadata, url: nil,
+                    error: "Демон передал файл, но iPhone не распознал аудио"
+                )
+                return
+            }
+            self.setDuration(duration, forKey: metadata.key)
+            self.finish(trackKey: metadata.key, metadata: metadata, url: url, error: nil)
         }
     }
 
     private func transferFailed(_ metadata: BackgroundTransferMetadata, message: String) {
-        let k = metadata.key
-        tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: message, isActive: false)
-        completionHandlers.removeValue(forKey: k)?(nil)
-        if metadata.isBulk { recordBulkResult(success: false) }
+        finish(trackKey: metadata.key, metadata: metadata, url: nil, error: message)
     }
 
-    private func recordBulkResult(success: Bool) {
-        guard var current = bulk else { return }
-        if success { current.done += 1 } else { current.failed += 1 }
-        bulk = current
-        bulkActive = current.done + current.failed < current.total
-        persistBulk()
-    }
-
-    private func persistBulk() {
-        if let bulk, let data = try? JSONEncoder().encode(bulk) {
-            UserDefaults.standard.set(data, forKey: Self.bulkStateKey)
+    private func finish(
+        trackKey: String,
+        metadata: BackgroundTransferMetadata?,
+        url: URL?,
+        error: String?
+    ) {
+        guard tasks[trackKey]?.isActive == true || waiters[trackKey] != nil || metadata != nil else { return }
+        if let url {
+            tasks[trackKey] = DownloadTaskInfo(
+                state: "done", progress: 100,
+                fileName: url.lastPathComponent, error: nil, isActive: false
+            )
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.bulkStateKey)
+            tasks[trackKey] = DownloadTaskInfo(
+                state: "error", progress: 0, fileName: nil,
+                error: error ?? "Не удалось скачать файл", isActive: false
+            )
         }
+
+        let trackWaiters = waiters.removeValue(forKey: trackKey) ?? []
+        let bulkResults = trackWaiters.filter(\.countsTowardBulk).count
+            + (trackWaiters.isEmpty && metadata?.isBulk == true ? 1 : 0)
+        for waiter in trackWaiters { waiter.onComplete?(url) }
+        for _ in 0..<bulkResults { recordBulkResult(success: url != nil) }
     }
 
     private func restoreTransfers(_ restored: [RestoredBackgroundTransfer]) {
-        var hasBulkTasks = false
+        var hasBulkTransfers = false
         for transfer in restored {
             let metadata = transfer.metadata
-            hasBulkTasks = hasBulkTasks || metadata.isBulk
+            hasBulkTransfers = hasBulkTransfers || metadata.isBulk
             tasks[metadata.key] = DownloadTaskInfo(
-                state: transfer.isRunning ? "transferring" : "queued",
-                progress: transfer.progress,
-                fileName: nil,
-                error: nil,
-                isActive: true
+                state: transfer.isRunning ? "downloading" : "queued",
+                progress: transfer.progress, fileName: nil, error: nil, isActive: true
             )
         }
-        if hasBulkTasks { bulkActive = true }
-        else if bulkActive { bulkActive = false; persistBulk() }
+        if hasBulkTransfers {
+            bulkActive = true
+        } else if bulkActive {
+            bulkActive = false
+            bulk = nil
+            persistBulk()
+        }
     }
 
     func handleBackgroundEvents(identifier: String, completionHandler: @escaping () -> Void) {
-        guard identifier == Self.backgroundSessionIdentifier else { completionHandler(); return }
+        guard identifier == Self.backgroundSessionIdentifier else {
+            completionHandler()
+            return
+        }
         backgroundEventsCompletionHandler = completionHandler
     }
 
@@ -268,38 +364,49 @@ final class DownloadManager: ObservableObject {
         handler?()
     }
 
-    /// Ставит все новые треки на системную фоновую очередь загрузок.
     func downloadAll(_ tracks: [Track]) {
         guard !bulkActive else { return }
         var seen = Set<String>()
-        let pending = tracks.filter { track in
-            let k = key(track)
-            return seen.insert(k).inserted && localFileURL(for: track) == nil && !isDownloading(track)
-        }
-        guard !pending.isEmpty else { bulk = nil; persistBulk(); return }
-        bulk = BulkDownload(total: pending.count, done: 0, failed: 0)
+        let unique = tracks.filter { seen.insert(key($0)).inserted }
+        guard !unique.isEmpty else { return }
+        bulk = BulkDownload(total: unique.count, done: 0, failed: 0)
         bulkActive = true
+        bulkKeys = Set(unique.map { key($0) })
         persistBulk()
-        for track in pending { enqueue(track, isBulk: true) }
+        for track in unique {
+            requestDownload(track, force: false, isBulk: true, onComplete: nil)
+        }
     }
 
     func cancelBulk() {
-        backgroundSession.getAllTasks { [weak self] sessionTasks in
-            let bulkTasks = sessionTasks.filter {
-                BackgroundTransferMetadata.decode($0.taskDescription)?.isBulk == true
+        let keysToCancel = bulkKeys
+        bulkActive = false
+        bulk = nil
+        bulkKeys.removeAll()
+        persistBulk()
+        session.getAllTasks { sessionTasks in
+            let tasksToCancel = sessionTasks.filter { task in
+                guard let metadata = BackgroundTransferMetadata.decode(task.taskDescription) else { return false }
+                return metadata.isBulk || keysToCancel.contains(metadata.key)
             }
-            bulkTasks.forEach { $0.cancel() }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                for task in bulkTasks {
-                    guard let meta = BackgroundTransferMetadata.decode(task.taskDescription) else { continue }
-                    self.tasks[meta.key] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: "Отменено", isActive: false)
-                    self.completionHandlers.removeValue(forKey: meta.key)?(nil)
-                }
-                self.bulkActive = false
-                self.bulk = nil
-                self.persistBulk()
-            }
+            tasksToCancel.forEach { $0.cancel() }
+        }
+    }
+
+    private func recordBulkResult(success: Bool) {
+        guard var current = bulk else { return }
+        if success { current.done += 1 } else { current.failed += 1 }
+        bulk = current
+        bulkActive = current.done + current.failed < current.total
+        if !bulkActive { bulkKeys.removeAll() }
+        persistBulk()
+    }
+
+    private func persistBulk() {
+        if let bulk, let data = try? JSONEncoder().encode(bulk) {
+            UserDefaults.standard.set(data, forKey: Self.bulkStateKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.bulkStateKey)
         }
     }
 }

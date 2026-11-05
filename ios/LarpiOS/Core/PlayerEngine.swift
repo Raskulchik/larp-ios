@@ -79,7 +79,7 @@ final class PlayerEngine: ObservableObject {
         currentTime = 0
         duration = TimeInterval(DownloadManager.shared.durationMs(for: track) ?? 0) / 1000.0
 
-        if let local = DownloadManager.shared.localFileURL(for: track) {
+        if track.source == "local", let local = DownloadManager.shared.localFileURL(for: track) {
             playItem(local, track: track)
             if DownloadManager.shared.durationMs(for: track) == nil {
                 Task { [weak self] in
@@ -142,11 +142,10 @@ final class PlayerEngine: ObservableObject {
         }
 
         retriedCorruptTracks.insert(key)
-        DownloadManager.shared.invalidateCachedFile(for: track)
         player.pause()
         player.replaceCurrentItem(with: nil)
         isPlaying = false
-        DownloadManager.shared.download(track) { [weak self] localURL in
+        DownloadManager.shared.redownload(track) { [weak self] localURL in
             Task { @MainActor [weak self] in
                 guard let self, self.currentTrack?.searchKey == track.searchKey else { return }
                 guard let localURL else { self.pushDiscordRPC(); return }
