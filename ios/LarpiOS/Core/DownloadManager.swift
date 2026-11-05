@@ -115,6 +115,16 @@ final class DownloadManager: ObservableObject {
         return url
     }
 
+    func invalidateCachedFile(for track: Track) {
+        guard track.source != "local" else { return }
+        try? FileManager.default.removeItem(at: fileURL(name: "\(key(track)).mp3"))
+    }
+
+    func reportPlaybackError(for track: Track, message: String) {
+        let k = key(track)
+        tasks[k] = DownloadTaskInfo(state: "error", progress: 0, fileName: nil, error: message, isActive: false)
+    }
+
     func remoteStreamURL(for track: Track) -> URL? {
         guard let base = AppSettings.shared.daemonBaseURL else { return nil }
         return base.appendingPathComponent("files").appendingPathComponent("\(key(track)).mp3")

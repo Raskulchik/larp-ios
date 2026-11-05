@@ -29,7 +29,9 @@ final class PlayerEngine: ObservableObject {
     private let player = AVPlayer()
     private var timeObserver: Any?
     private var itemEndObserver: NSObjectProtocol?
+    private var itemStatusObservation: NSKeyValueObservation?
     private var artworkTask: Task<Void, Never>?
+    private var retriedCorruptTracks = Set<String>()
 
     init() {
         configureAudioSession()
@@ -66,6 +68,7 @@ final class PlayerEngine: ObservableObject {
     /// Начинает проигрывание очереди. Terем, что ещё не скачано, — ставит в очередь на скачивание.
     func play(_ tracks: [Track], startAt index: Int = 0) {
         guard !tracks.isEmpty else { return }
+        retriedCorruptTracks.removeAll()
         queue = tracks
         currentIndex = min(max(index, 0), tracks.count - 1)
         loadCurrent()
@@ -101,6 +104,15 @@ final class PlayerEngine: ObservableObject {
 
     private func playItem(_ url: URL, track: Track) {
         let item = AVPlayerItem(url: url)
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed, track.source != "local" else { return }
+            let message = item.error?.localizedDescription ?? "Не удалось декодировать аудиофайл"
+            Task { @MainActor [weak self] in
+                guard let self, self.player.currentItem === item else { return }
+                self.retryCorruptCachedTrack(track, message: message)
+            }
+        }
         if let obs = itemEndObserver {
             NotificationCenter.default.removeObserver(obs)
         }
@@ -118,6 +130,30 @@ final class PlayerEngine: ObservableObject {
         loadArtwork(track)
         pushDiscordRPC()
         ensureRPCHeartbeat()
+    }
+
+    private func retryCorruptCachedTrack(_ track: Track, message: String) {
+        let key = DownloadManager.taskKey(for: track)
+        guard !retriedCorruptTracks.contains(key) else {
+            DownloadManager.shared.reportPlaybackError(for: track, message: "Повторная загрузка тоже не читается: \(message)")
+            isPlaying = false
+            pushDiscordRPC()
+            return
+        }
+
+        retriedCorruptTracks.insert(key)
+        DownloadManager.shared.invalidateCachedFile(for: track)
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        isPlaying = false
+        DownloadManager.shared.download(track) { [weak self] localURL in
+            Task { @MainActor [weak self] in
+                guard let self, self.currentTrack?.searchKey == track.searchKey else { return }
+                guard let localURL else { self.pushDiscordRPC(); return }
+                self.playItem(localURL, track: track)
+            }
+        }
+        pushDiscordRPC()
     }
 
     func togglePlayPause() {
