@@ -473,14 +473,18 @@ async fn serve_file(State(state): State<Arc<AppState>>, Path(name): Path<String>
     let len = (end - start + 1) as usize;
     let body_bytes = bytes[start as usize..start as usize + len].to_vec();
 
-    let mut resp = Response::builder()
+    let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, CONTENT_TYPE_MP3)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CONTENT_LENGTH, len.to_string())
-        .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", start, end, total))
-        .body(axum::body::Body::from(body_bytes))
-        .unwrap();
+        .header(header::CONTENT_LENGTH, len.to_string());
+    if status == StatusCode::PARTIAL_CONTENT {
+        builder = builder.header(
+            header::CONTENT_RANGE,
+            format!("bytes {}-{}/{}", start, end, total),
+        );
+    }
+    let mut resp = builder.body(axum::body::Body::from(body_bytes)).unwrap();
 
     resp.headers_mut().insert("Access-Control-Allow-Origin", HeaderValue::from_static("*"));
     resp

@@ -49,7 +49,7 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
     ) {
         guard let metadata = BackgroundTransferMetadata.decode(downloadTask.taskDescription) else { return }
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
-        guard status == 200 else {
+        guard status == 200 || status == 206 else {
             onFailure?(metadata, responseError(at: location, status: status))
             return
         }
