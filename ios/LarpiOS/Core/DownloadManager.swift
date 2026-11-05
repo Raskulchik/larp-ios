@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 
 enum AudioFile {
     static func durationMs(of url: URL) async -> Int64? {
@@ -7,6 +8,39 @@ enum AudioFile {
         guard let seconds = try? await asset.load(.duration).seconds,
               seconds.isFinite, seconds > 0 else { return nil }
         return Int64((seconds * 1_000).rounded())
+    }
+}
+
+private enum DownloadedFileInstaller {
+    static func save(_ data: Data, key: String, in directory: URL) throws -> URL {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("\(key).mp3")
+        let staging = directory.appendingPathComponent(".\(key)-\(UUID().uuidString).download")
+        defer { try? fileManager.removeItem(at: staging) }
+
+        try data.write(to: staging, options: .atomic)
+        let attributes = try fileManager.attributesOfItem(atPath: staging.path)
+        let writtenSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard writtenSize == Int64(data.count) else {
+            throw NSError(
+                domain: "Larpi.Download",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Данные записались не полностью"]
+            )
+        }
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.moveItem(at: staging, to: destination)
+        return destination
+    }
+
+    static func freeSpaceDescription(at directory: URL) -> String {
+        let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey]
+        let bytes = try? directory.resourceValues(forKeys: keys).volumeAvailableCapacityForImportantUsage
+        guard let bytes else { return "свободное место неизвестно" }
+        return "свободно \(bytes / 1_048_576) МБ"
     }
 }
 
@@ -38,6 +72,10 @@ final class DownloadManager: ObservableObject {
         let countsTowardBulk: Bool
     }
 
+    private struct RequestBuildFailure: Error {
+        let message: String
+    }
+
     @Published private(set) var tasks: [String: DownloadTaskInfo] = [:]
     @Published private(set) var bulk: BulkDownload?
     @Published private(set) var bulkActive = false
@@ -45,10 +83,13 @@ final class DownloadManager: ObservableObject {
 
     private let downloadsDirectory: URL
     private let session: URLSession
+    private let fallbackSession: URLSession
     private let delegate: BackgroundDownloadDelegate
     private var waiters: [String: [Waiter]] = [:]
     private var backgroundEventsCompletionHandler: (() -> Void)?
     private var bulkKeys = Set<String>()
+    private var fallbackTasks: [String: URLSessionDataTask] = [:]
+    private var backgroundTaskIDs: [String: UIBackgroundTaskIdentifier] = [:]
 
     private init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -76,6 +117,12 @@ final class DownloadManager: ObservableObject {
         configuration.timeoutIntervalForResource = 6 * 60 * 60
         session = URLSession(configuration: configuration, delegate: transferDelegate, delegateQueue: nil)
 
+        let fallbackConfiguration = URLSessionConfiguration.ephemeral
+        fallbackConfiguration.httpMaximumConnectionsPerHost = 1
+        fallbackConfiguration.timeoutIntervalForRequest = 6 * 60 * 60
+        fallbackConfiguration.timeoutIntervalForResource = 6 * 60 * 60
+        fallbackSession = URLSession(configuration: fallbackConfiguration)
+
         transferDelegate.onProgress = { [weak self] metadata, progress in
             Task { @MainActor [weak self] in self?.transferProgress(metadata, progress: progress) }
         }
@@ -84,6 +131,9 @@ final class DownloadManager: ObservableObject {
         }
         transferDelegate.onFailure = { [weak self] metadata, message in
             Task { @MainActor [weak self] in self?.transferFailed(metadata, message: message) }
+        }
+        transferDelegate.onFileSystemFailure = { [weak self] metadata, message in
+            Task { @MainActor [weak self] in self?.retryWithoutTemporaryFile(metadata, reason: message) }
         }
         transferDelegate.onEventsFinished = { [weak self] in
             Task { @MainActor [weak self] in self?.finishBackgroundEvents() }
@@ -234,16 +284,35 @@ final class DownloadManager: ObservableObject {
 
     private func enqueue(_ track: Track, isBulk: Bool) {
         let trackKey = key(track)
-        guard let base = AppSettings.shared.daemonBaseURL else {
-            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Сервер не настроен")
+        let request: URLRequest
+        switch makeRequest(for: track) {
+        case .success(let built): request = built
+        case .failure(let failure):
+            finish(trackKey: trackKey, metadata: nil, url: nil, error: failure.message)
             return
+        }
+        let metadata = BackgroundTransferMetadata(key: trackKey, track: track, isBulk: isBulk)
+        guard let description = metadata.taskDescription else {
+            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Не удалось создать задачу загрузки")
+            return
+        }
+        let task = session.downloadTask(with: request)
+        task.taskDescription = description
+        tasks[trackKey] = DownloadTaskInfo(
+            state: "downloading", progress: 0, fileName: nil, error: nil, isActive: true
+        )
+        task.resume()
+    }
+
+    private func makeRequest(for track: Track) -> Result<URLRequest, RequestBuildFailure> {
+        guard let base = AppSettings.shared.daemonBaseURL else {
+            return .failure(RequestBuildFailure(message: "Сервер не настроен"))
         }
         guard var components = URLComponents(
             url: base.appendingPathComponent("api/download-file"),
             resolvingAgainstBaseURL: false
         ) else {
-            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Некорректный адрес сервера")
-            return
+            return .failure(RequestBuildFailure(message: "Некорректный адрес сервера"))
         }
         components.queryItems = [
             URLQueryItem(name: "source", value: track.source),
@@ -252,24 +321,89 @@ final class DownloadManager: ObservableObject {
             URLQueryItem(name: "artist", value: track.artist)
         ]
         guard let url = components.url else {
-            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Не удалось собрать адрес загрузки")
-            return
+            return .failure(RequestBuildFailure(message: "Не удалось собрать адрес загрузки"))
         }
-        let metadata = BackgroundTransferMetadata(key: trackKey, track: track, isBulk: isBulk)
-        guard let description = metadata.taskDescription else {
-            finish(trackKey: trackKey, metadata: nil, url: nil, error: "Не удалось создать задачу загрузки")
-            return
-        }
-
         var request = AppSettings.shared.request(url)
         request.httpMethod = "GET"
         request.timeoutInterval = 6 * 60 * 60
-        let task = session.downloadTask(with: request)
-        task.taskDescription = description
+        return .success(request)
+    }
+
+    /// URLSession background downloads first write to a system-managed temp file.
+    /// When iOS reports an I/O failure creating that file, retry as a data task and
+    /// install the response directly into the app's own Downloads directory.
+    private func retryWithoutTemporaryFile(_ metadata: BackgroundTransferMetadata, reason: String) {
+        let trackKey = metadata.key
+        guard fallbackTasks[trackKey] == nil else { return }
+        let request: URLRequest
+        switch makeRequest(for: metadata.track) {
+        case .success(let built): request = built
+        case .failure(let failure):
+            finish(trackKey: trackKey, metadata: metadata, url: nil, error: failure.message)
+            return
+        }
+
         tasks[trackKey] = DownloadTaskInfo(
-            state: "downloading", progress: 0, fileName: nil, error: nil, isActive: true
+            state: "saving", progress: 0, fileName: nil, error: nil, isActive: true
         )
+        let backgroundID = UIApplication.shared.beginBackgroundTask(
+            withName: "Larpi audio fallback \(trackKey)"
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.fallbackTasks[trackKey]?.cancel()
+                self.finish(
+                    trackKey: trackKey, metadata: metadata, url: nil,
+                    error: "iOS прервала сохранение аудио в фоне. Исходная ошибка: \(reason)"
+                )
+                self.endBackgroundTask(for: trackKey)
+            }
+        }
+        backgroundTaskIDs[trackKey] = backgroundID
+        let downloadDirectory = downloadsDirectory
+
+        let task = fallbackSession.dataTask(with: request) { [weak self] data, response, error in
+            var savedURL: URL?
+            var failure: String?
+            if let error {
+                let nsError = error as NSError
+                failure = "Повтор после \(reason) не удался: \(error.localizedDescription) [\(nsError.domain):\(nsError.code)]; \(DownloadedFileInstaller.freeSpaceDescription(at: downloadDirectory))"
+            } else if let response = response as? HTTPURLResponse, response.statusCode != 200 && response.statusCode != 206 {
+                failure = "Демон ответил HTTP \(response.statusCode) при повторной загрузке"
+            } else if !(response is HTTPURLResponse) {
+                failure = "Повторный ответ демона не содержит HTTP статуса"
+            } else if let data, data.count >= 1_024 {
+                do {
+                    savedURL = try DownloadedFileInstaller.save(data, key: trackKey, in: downloadDirectory)
+                } catch {
+                    let nsError = error as NSError
+                    failure = "Не удалось записать аудио в Larpi: \(error.localizedDescription) [\(nsError.domain):\(nsError.code)]; \(DownloadedFileInstaller.freeSpaceDescription(at: downloadDirectory))"
+                }
+            } else {
+                failure = "Повторный ответ демона пустой или слишком маленький"
+            }
+
+            let completedURL = savedURL
+            let completedFailure = failure
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.fallbackTasks.removeValue(forKey: trackKey)
+                self.endBackgroundTask(for: trackKey)
+                if let completedURL {
+                    self.transferFinished(metadata, at: completedURL)
+                } else {
+                    self.finish(trackKey: trackKey, metadata: metadata, url: nil, error: completedFailure)
+                }
+            }
+        }
+        fallbackTasks[trackKey] = task
         task.resume()
+    }
+
+    private func endBackgroundTask(for trackKey: String) {
+        guard let identifier = backgroundTaskIDs.removeValue(forKey: trackKey),
+              identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
     }
 
     private func transferProgress(_ metadata: BackgroundTransferMetadata, progress: Double) {
@@ -384,6 +518,7 @@ final class DownloadManager: ObservableObject {
         bulk = nil
         bulkKeys.removeAll()
         persistBulk()
+        for key in keysToCancel { fallbackTasks[key]?.cancel() }
         session.getAllTasks { sessionTasks in
             let tasksToCancel = sessionTasks.filter { task in
                 guard let metadata = BackgroundTransferMetadata.decode(task.taskDescription) else { return false }

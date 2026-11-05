@@ -17,8 +17,8 @@ targets:
       base:
         PRODUCT_NAME: Larpi
         PRODUCT_BUNDLE_IDENTIFIER: local.larpi.app
-        MARKETING_VERSION: "0.2.8"
-        CURRENT_PROJECT_VERSION: "10"
+        MARKETING_VERSION: "0.2.9"
+        CURRENT_PROJECT_VERSION: "11"
         SWIFT_VERSION: "5.7"
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_BITCODE: "NO"
@@ -36,8 +36,8 @@ targets:
       path: LarpiOS/Info.plist
       properties:
         CFBundleDisplayName: Larpi
-        CFBundleShortVersionString: "0.2.8"
-        CFBundleVersion: "10"
+        CFBundleShortVersionString: "0.2.9"
+        CFBundleVersion: "11"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

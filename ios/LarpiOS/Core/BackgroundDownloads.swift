@@ -27,6 +27,7 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
     var onProgress: ((BackgroundTransferMetadata, Double) -> Void)?
     var onFinished: ((BackgroundTransferMetadata, URL) -> Void)?
     var onFailure: ((BackgroundTransferMetadata, String) -> Void)?
+    var onFileSystemFailure: ((BackgroundTransferMetadata, String) -> Void)?
     var onEventsFinished: (() -> Void)?
 
     func urlSession(
@@ -88,14 +89,24 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
             onFinished?(metadata, destination)
         } catch {
             let nsError = error as NSError
-            onFailure?(metadata, "Не удалось сохранить \(metadata.track.title): \(nsError.localizedDescription) [\(nsError.domain):\(nsError.code)]")
+            onFileSystemFailure?(metadata, "Не удалось сохранить \(metadata.track.title): \(nsError.localizedDescription) [\(nsError.domain):\(nsError.code)]")
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error,
               let metadata = BackgroundTransferMetadata.decode(task.taskDescription) else { return }
-        onFailure?(metadata, error.localizedDescription)
+        let nsError = error as NSError
+        let filesystemErrorCodes = [
+            URLError.Code.cannotCreateFile.rawValue,
+            URLError.Code.cannotWriteToFile.rawValue,
+            URLError.Code.cannotCloseFile.rawValue
+        ]
+        if nsError.domain == NSURLErrorDomain && filesystemErrorCodes.contains(nsError.code) {
+            onFileSystemFailure?(metadata, error.localizedDescription)
+        } else {
+            onFailure?(metadata, "\(error.localizedDescription) [\(nsError.domain):\(nsError.code)]")
+        }
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
