@@ -99,7 +99,20 @@ final class DownloadManager: ObservableObject {
     func localFileURL(for track: Track) -> URL? {
         let ext = track.source == "local" ? (track.localFileExtension ?? "mp3") : "mp3"
         let url = fileURL(name: "\(key(track)).\(ext)")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+
+        // Older failed background transfers could leave an empty/truncated MP3 in
+        // Documents. Treat it as a cache miss so playback retries the daemon.
+        if track.source != "local" {
+            let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+            let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            guard size >= 1_024 else {
+                try? fileManager.removeItem(at: url)
+                return nil
+            }
+        }
+        return url
     }
 
     func remoteStreamURL(for track: Track) -> URL? {
