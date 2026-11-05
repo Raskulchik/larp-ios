@@ -407,10 +407,17 @@ async fn download_ytd(state: &std::sync::Arc<AppState>, job: &Job, kind: YtdKind
         anyhow::bail!("yt-dlp failed: {}", state.get(&job.id).await.as_ref().and_then(|j| if !j.message.is_empty() { Some(j.message.clone()) } else { None }).unwrap_or_else(|| "unknown".into()));
     }
 
-    // yt-dlp положил файл как .tmp-<id>.mp3
-    let produced = conf.files_dir().join(format!(".tmp-{}.mp3", job.id));
-    if !produced.exists() {
-        anyhow::bail!("yt-dlp finished but no mp3 found (is ffmpeg installed?)");
+    // The output template above points into tui_downloads_dir, not the legacy
+    // daemon files directory. Look beside the final shared-library destination.
+    let produced = tmp_base.with_extension("mp3");
+    let produced_size = std::fs::metadata(&produced)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    if produced_size == 0 {
+        anyhow::bail!(
+            "yt-dlp exited successfully but produced no MP3 at {}",
+            produced.display()
+        );
     }
 
     tokio::fs::rename(&produced, &final_path).await?;
